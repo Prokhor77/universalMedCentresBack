@@ -32,10 +32,26 @@ class User(Base):
     role = Column(String, nullable=False)
     address = Column(String, nullable=False)
 
+class WorkType(Base):
+    __tablename__ = "work_types"
+    type_id = Column(Integer, primary_key=True, index=True)
+    type_description = Column(String, nullable=False)
+
+class WorkSection(Base):
+    __tablename__ = "work_sections"
+    section_id = Column(Integer, primary_key=True, index=True)
+    section_description = Column(String, nullable=False)
+
+class Doctor(Base):
+    __tablename__ = "doctors"
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    work_type_id = Column(Integer, ForeignKey("work_types.type_id"))
+    work_section_id = Column(String, ForeignKey("work_sections.section_id"))
+    work_experience = Column(String)
+
 # Создание таблиц
 Base.metadata.create_all(bind=engine)
 
-# Модель для запроса аутентификации
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -45,7 +61,6 @@ class LoginResponse(BaseModel):
   med_center_id: Optional[int] = None
   full_name: Optional[str] = None
   center_name: Optional[str] = None
-
 
 class MedCentreResponse(BaseModel):
     id_center: int
@@ -57,7 +72,6 @@ class MedCentreResponse(BaseModel):
     class Config:
         orm_mode = True
 
-# Модель для ответа с информацией о главном враче
 class MainDoctorResponse(BaseModel):
     id: int
     full_name: str
@@ -70,12 +84,10 @@ class MainDoctorResponse(BaseModel):
     class Config:
         orm_mode = True
 
-# Модель для поликлиник
 class PolyclinicResponse(BaseModel):
     id_center: int
     center_name: str
 
-# Модель для поликлиник
 class MedCenResponse(BaseModel):
     id_center: int
     center_name: str
@@ -83,6 +95,33 @@ class MedCenResponse(BaseModel):
     center_address: str
     center_number: int
 
+class DoctorResponse(BaseModel):
+    id: int
+    full_name: str
+    email: str
+    password: str
+    center_name: str
+    med_center_id: int
+    address: str
+    work_type_description: str
+    work_section_description: str
+
+    class Config:
+        orm_mode = True
+
+class WorkSectionResponse(BaseModel):
+    section_id: int
+    section_description: str
+
+    class Config:
+        orm_mode = True
+
+class WorkTypeResponse(BaseModel):
+    type_id: int
+    type_description: str
+
+    class Config:
+        orm_mode = True
 
 app = FastAPI()
 
@@ -96,7 +135,6 @@ def get_db():
 
 def get_user(db: Session, email: str, password: str):
     return db.query(User).filter(User.email == email, User.password == password).first()
-
 
 @app.post("/login", response_model=LoginResponse)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
@@ -140,6 +178,51 @@ def get_main_doctors(db: Session = Depends(get_db)):
         for id, full_name, email, password, center_name, med_center_id, address in doctors
     ]
 
+@app.get("/doctors", response_model=List[DoctorResponse])
+def get_doctors(db: Session = Depends(get_db)):
+    doctors = (
+        db.query(
+            User.id,
+            User.full_name,
+            User.email,
+            User.password,
+            MedCentre.center_name,
+            User.med_center_id,
+            User.address,
+            WorkType.type_description.label("work_type_description"),
+            Doctor.work_section_id  # Получаем список ID секций
+        )
+        .join(MedCentre, User.med_center_id == MedCentre.id_center)
+        .join(Doctor, User.id == Doctor.user_id)
+        .join(WorkType, Doctor.work_type_id == WorkType.type_id)
+        .filter(User.role == "doctor")
+        .all()
+    )
+
+    doctor_list = []
+    for id, full_name, email, password, center_name, med_center_id, address, work_type_description, work_section_ids in doctors:
+        section_descriptions = []
+        if work_section_ids:
+            section_ids = [int(sec_id) for sec_id in work_section_ids.split(",")]  # Разбиваем ID
+            sections = db.query(WorkSection.section_description).filter(WorkSection.section_id.in_(section_ids)).all()
+            section_descriptions = [sec[0] for sec in sections]  # Получаем текст описаний
+
+        doctor_list.append(
+            DoctorResponse(
+                id=id,
+                full_name=full_name,
+                email=email,
+                password=password,
+                center_name=center_name,
+                med_center_id=med_center_id,
+                address=address,
+                work_type_description=work_type_description,
+                work_section_description=", ".join(section_descriptions)  # Объединяем в строку
+            )
+        )
+
+    return doctor_list
+
 @app.get("/admins", response_model=List[MainDoctorResponse])
 def get_admins(db: Session = Depends(get_db)):
     doctors = (
@@ -161,7 +244,7 @@ def get_admins(db: Session = Depends(get_db)):
         for id, full_name, email, password, center_name, med_center_id, address in doctors
     ]
 
-@app.delete("/delete-doctor/{doctor_id}")
+@app.delete("/delete-main-doctor/{doctor_id}")
 def delete_doctor(doctor_id: int, db: Session = Depends(get_db)):
     doctor = db.query(User).filter(User.id == doctor_id, User.role == "main-doctor").first()
     if not doctor:
@@ -181,7 +264,7 @@ def delete_doctor(doctor_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Администратор успешно удалён"}
 
-@app.post("/add-doctor")
+@app.post("/add-main-doctor")
 def add_doctor(request: MainDoctorResponse, db: Session = Depends(get_db)):
     new_doctor = User(
         email=request.email,
@@ -211,7 +294,7 @@ def add_admin(request: MainDoctorResponse, db: Session = Depends(get_db)):
     db.refresh(new_doctor)
     return {"message": "Врач успешно добавлен", "doctor_id": new_doctor.id}
 
-@app.put("/update-doctor/{doctor_id}")
+@app.put("/update-main-doctor/{doctor_id}")
 def update_doctor(doctor_id: int, request: MainDoctorResponse, db: Session = Depends(get_db)):
     doctor = db.query(User).filter(User.id == doctor_id).first()
     if not doctor:
@@ -261,6 +344,34 @@ def get_med_centres(db: Session = Depends(get_db)):
     centers = db.query(MedCentre.id_center, MedCentre.center_name, MedCentre.center_description, MedCentre.center_address, MedCentre.center_number).all()
     return [MedCenResponse(id_center=id_center, center_name=center_name, center_description = center_description, center_address = center_address, center_number = center_number) for id_center, center_name, center_description,center_address,center_number in centers]
 
+@app.get("/work-sections", response_model=List[WorkSectionResponse])
+def get_work_sections(db: Session = Depends(get_db)):
+    """
+    Возвращает список всех разделов работы (work_sections).
+    """
+    work_sections = db.query(WorkSection.section_id, WorkSection.section_description).all()
+    return [
+        WorkSectionResponse(
+            section_id=section_id,
+            section_description=section_description
+        )
+        for section_id, section_description in work_sections
+    ]
+
+@app.get("/work-types", response_model=List[WorkTypeResponse])
+def get_work_types(db: Session = Depends(get_db)):
+    """
+    Возвращает список всех типов работы (work_types).
+    """
+    work_types = db.query(WorkType.type_id, WorkType.type_description).all()
+    return [
+        WorkTypeResponse(
+            type_id=type_id,
+            type_description=type_description
+        )
+        for type_id, type_description in work_types
+    ]
+
 @app.post("/add-med-center")
 def add_med_center(request: MedCenResponse, db: Session = Depends(get_db)):
     new_med = MedCentre(
@@ -292,7 +403,6 @@ def update_med_center(id_center: int, request: MedCenResponse, db: Session = Dep
         raise HTTPException(status_code=500, detail="Ошибка при обновлении данных мед центра")
 
     return {"message": "Данные мед центра успешно обновлены", "center": med_center}
-
 
 @app.delete("/delete-med-center/{id_center}")
 def delete_med_center(id_center: int, db: Session = Depends(get_db)):
