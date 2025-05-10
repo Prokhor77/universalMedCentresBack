@@ -4,6 +4,11 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel
 from typing import Optional, List
+import qrcode
+import os
+
+QR_CODE_DIR = "qr_codes"
+os.makedirs(QR_CODE_DIR, exist_ok=True)
 
 # Database setup
 DATABASE_URL = "sqlite:///./main1.db"
@@ -24,6 +29,15 @@ class MedicalCenter(Base):
     users = relationship("User", back_populates="med_center")
 
 
+class QRCode(Base):
+    __tablename__ = "qr_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    userId = Column(Integer, ForeignKey('users.id'))
+    path = Column(String, nullable=False)
+
+    user = relationship("User", back_populates="qr_code")
+
 class User(Base):
     __tablename__ = "users"
 
@@ -37,6 +51,7 @@ class User(Base):
     tgId = Column(Integer)
 
     med_center = relationship("MedicalCenter", back_populates="users")
+    qr_code = relationship("QRCode", uselist=False, back_populates="user")
 
 
 Base.metadata.create_all(bind=engine)
@@ -147,7 +162,31 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_user)
 
-    # Get the medical center if it exists
+    # Генерация QR-кода только для ролей, отличных от 'sudo-admin'
+    if user.role != 'sudo-admin':
+        try:
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr_data = f"UserID:{db_user.id}|Key:{db_user.key}"
+            qr.add_data(qr_data)
+            qr.make(fit=True)
+
+            img = qr.make_image(fill_color="black", back_color="white")
+            qr_filename = f"user_{db_user.id}_qr.png"
+            qr_path = os.path.join(QR_CODE_DIR, qr_filename)
+            img.save(qr_path)
+
+            qr_code = QRCode(userId=db_user.id, path=qr_path)
+            db.add(qr_code)
+            db.commit()
+        except Exception as e:
+            print(f"Error generating QR code: {str(e)}")
+
+    # Получение информации о медицинском центре
     center_name = None
     if db_user.medCenterId:
         center = db.query(MedicalCenter).filter(MedicalCenter.idCenter == db_user.medCenterId).first()
