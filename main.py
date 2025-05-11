@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
+from sqlalchemy import Boolean, create_engine, Column, Integer, String, ForeignKey, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel
@@ -27,7 +27,50 @@ class MedicalCenter(Base):
     centerNumber = Column(String, nullable=False)
 
     users = relationship("User", back_populates="med_center")
+    feedbacks = relationship("Feedback", back_populates="med_center")  # Add this line
 
+
+class InpatientCare(Base):
+    __tablename__ = "inpatient_care"
+
+    id = Column(Integer, primary_key=True, index=True)
+    userId = Column(Integer, ForeignKey('users.id'))
+    medCenterId = Column(Integer, ForeignKey('med_centers.idCenter'))
+    floor = Column(Integer)
+    ward = Column(Integer)
+    receipt_date = Column(String)  # Можно использовать Date, но для SQLite String проще
+    expire_date = Column(String)
+
+    user = relationship("User", back_populates="inpatient_cares")
+    med_center = relationship("MedicalCenter")
+
+
+class Doctor(Base):
+    __tablename__ = "doctors"
+
+    userId = Column(Integer, ForeignKey('users.id'), primary_key=True)
+    work_type = Column(String)
+    experience = Column(String)
+    category = Column(String)
+
+    feedbacks = relationship("Feedback", back_populates="doctor")
+    user = relationship("User", back_populates="doctor")
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+
+    id = Column(Integer, primary_key=True, index=True)
+    userId = Column(Integer, ForeignKey('users.id'))
+    doctorId = Column(Integer, ForeignKey('doctors.userId'))
+    medCenterId = Column(Integer, ForeignKey('med_centers.idCenter'))  # Fixed typo here
+    grade = Column(Integer)
+    description = Column(String)
+    active = Column(String)
+
+    user = relationship("User", back_populates="feedbacks")
+    doctor = relationship("Doctor", back_populates="feedbacks")
+    med_center = relationship("MedicalCenter", back_populates="feedbacks")  # Fixed reference here
 
 class QRCode(Base):
     __tablename__ = "qr_codes"
@@ -49,8 +92,12 @@ class User(Base):
     email = Column(String)
     address = Column(String)
     tgId = Column(Integer)
+    photo = Column(String)
 
+    inpatient_cares = relationship("InpatientCare", back_populates="user")
     med_center = relationship("MedicalCenter", back_populates="users")
+    doctor = relationship("Doctor", back_populates="user", uselist=False)  # Add this line
+    feedbacks = relationship("Feedback", back_populates="user")  # You already have this
     qr_code = relationship("QRCode", uselist=False, back_populates="user")
 
 
@@ -110,6 +157,44 @@ class MedicalCenterResponse(BaseModel):
     centerDescription: Optional[str]
     centerAddress: str
     centerNumber: str
+
+    class RejectReason(BaseModel):
+        reason: str
+
+    class FeedbackResponse(BaseModel):
+        id: int
+        userId: int
+        doctorId: int
+        medCenterId: int
+        grade: int
+        description: str
+        active: str
+        reason: Optional[str] = None
+
+    @app.get("/feedbacks", response_model=List[FeedbackResponse])
+    def get_feedbacks(db: Session = Depends(get_db)):
+        return db.query(Feedback).all()
+
+    @app.post("/feedbacks/{feedback_id}/approve")
+    def approve_feedback(feedback_id: int, db: Session = Depends(get_db)):
+        feedback = db.query(Feedback).filter(Feedback.id == feedback_id).first()
+        if not feedback:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+
+        feedback.active = "true"
+        db.commit()
+        return {"message": "Feedback approved"}
+
+    @app.post("/feedbacks/{feedback_id}/reject")
+    def reject_feedback(feedback_id: int, reason: RejectReason, db: Session = Depends(get_db)):
+        feedback = db.query(Feedback).filter(Feedback.id == feedback_id).first()
+        if not feedback:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+
+        feedback.active = "false"
+        feedback.reason = reason.reason
+        db.commit()
+        return {"message": "Feedback rejected"}
 
 @app.get("/med-centers", response_model=List[MedicalCenterResponse])
 def get_medical_centers(db: Session = Depends(get_db)):
