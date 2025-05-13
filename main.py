@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy import Boolean, create_engine, Column, Integer, String, ForeignKey, Date
 from sqlalchemy.ext.declarative import declarative_base
@@ -40,6 +42,7 @@ class InpatientCare(Base):
     ward = Column(Integer)
     receipt_date = Column(String)  # Можно использовать Date, но для SQLite String проще
     expire_date = Column(String)
+    active = Column(String)
 
     user = relationship("User", back_populates="inpatient_cares")
     med_center = relationship("MedicalCenter")
@@ -106,6 +109,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI()
 
 
+
 # Pydantic models
 class UserCreate(BaseModel):
     key: str
@@ -115,6 +119,30 @@ class UserCreate(BaseModel):
     email: Optional[str] = None
     address: Optional[str] = None
     tgId: Optional[int] = None
+
+class InpatientCareCreate(BaseModel):
+    userId: int
+    floor: int
+    ward: int
+    receipt_date: str
+    expire_date: str
+
+class InpatientCareResponse(BaseModel):
+    id: int
+    userId: int
+    userFullName: str
+    medCenterId: int
+    floor: int
+    ward: int
+    receipt_date: str
+    expire_date: str
+
+    class Config:
+        from_attributes = True
+
+class UserSearchResponse(BaseModel):
+    id: int
+    fullName: str
 
 
 class UserResponse(BaseModel):
@@ -171,6 +199,80 @@ class MedicalCenterResponse(BaseModel):
         active: str
         reason: Optional[str] = None
 
+    class InpatientCareCreate(BaseModel):
+        userId: int
+        floor: int
+        ward: int
+        receipt_date: str
+        expire_date: str
+
+    class InpatientCareResponse(BaseModel):
+        id: int
+        userFullName: str
+        floor: int
+        ward: int
+        receipt_date: Optional[float]
+        expire_date: Optional[float]
+        active: str
+
+        class Config:
+            from_attributes = True
+
+    @app.get("/inpatient-cares", response_model=List[InpatientCareResponse])
+    def get_inpatient_cares(med_center_id: int, active: str = "true", db: Session = Depends(get_db)):
+        cares = db.query(InpatientCare).filter(
+            InpatientCare.medCenterId == med_center_id,
+            InpatientCare.active == active
+        ).all()
+
+        result = []
+        for care in cares:
+            user = db.query(User).filter(User.id == care.userId).first()
+            result.append({
+                "id": care.id,
+                "userFullName": user.fullName if user else "Unknown",
+                "floor": care.floor,
+                "ward": care.ward,
+                "receipt_date": care.receipt_date,
+                "expire_date": care.expire_date,
+                "active": care.active
+            })
+        return result
+
+    @app.post("/inpatient-cares")
+    def create_inpatient_care(care: InpatientCareCreate, med_center_id: int, db: Session = Depends(get_db)):
+        db_care = InpatientCare(
+            **care.dict(),
+            medCenterId=med_center_id,
+            active="true"
+        )
+        db.add(db_care)
+        db.commit()
+        db.refresh(db_care)
+        return db_care
+
+    @app.patch("/inpatient-cares/{care_id}")
+    def update_inpatient_care(care_id: int, active: str, db: Session = Depends(get_db)):
+        care = db.query(InpatientCare).filter(InpatientCare.id == care_id).first()
+        if not care:
+            raise HTTPException(status_code=404, detail="Care record not found")
+
+        care.active = active
+        if active == "false":
+            # Текущее время в миллисекундах
+            care.expire_date = str(int(datetime.utcnow().timestamp() * 1000))
+
+        db.commit()
+        return {"message": "Care record updated"}
+
+    @app.get("/users/search")
+    def search_users(med_center_id: int, query: str, db: Session = Depends(get_db)):
+        users = db.query(User).filter(
+            User.medCenterId == med_center_id,
+            User.fullName.ilike(f"%{query}%")
+        ).all()
+        return [{"id": u.id, "fullName": u.fullName} for u in users]
+
     @app.get("/feedbacks", response_model=List[FeedbackResponse])
     def get_feedbacks(db: Session = Depends(get_db)):
         return db.query(Feedback).all()
@@ -200,6 +302,8 @@ class MedicalCenterResponse(BaseModel):
 def get_medical_centers(db: Session = Depends(get_db)):
     centers = db.query(MedicalCenter).all()
     return centers
+
+
 
 @app.post("/login-with-key", response_model=LoginResponse)
 def login_with_key(request: LicenseKeyRequest, db: Session = Depends(get_db)):
