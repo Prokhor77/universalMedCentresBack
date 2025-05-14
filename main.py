@@ -40,9 +40,9 @@ class InpatientCare(Base):
     medCenterId = Column(Integer, ForeignKey('med_centers.idCenter'))
     floor = Column(Integer)
     ward = Column(Integer)
+    active = Column(String)
     receipt_date = Column(String)  # Можно использовать Date, но для SQLite String проще
     expire_date = Column(String)
-    active = Column(String)
 
     user = relationship("User", back_populates="inpatient_cares")
     med_center = relationship("MedicalCenter")
@@ -136,6 +136,7 @@ class InpatientCareResponse(BaseModel):
     ward: int
     receipt_date: str
     expire_date: str
+    active: str
 
     class Config:
         from_attributes = True
@@ -199,24 +200,6 @@ class MedicalCenterResponse(BaseModel):
         active: str
         reason: Optional[str] = None
 
-    class InpatientCareCreate(BaseModel):
-        userId: int
-        floor: int
-        ward: int
-        receipt_date: str
-        expire_date: str
-
-    class InpatientCareResponse(BaseModel):
-        id: int
-        userFullName: str
-        floor: int
-        ward: int
-        receipt_date: Optional[float]
-        expire_date: Optional[float]
-        active: str
-
-        class Config:
-            from_attributes = True
 
     @app.get("/inpatient-cares", response_model=List[InpatientCareResponse])
     def get_inpatient_cares(med_center_id: int, active: str = "true", db: Session = Depends(get_db)):
@@ -228,15 +211,17 @@ class MedicalCenterResponse(BaseModel):
         result = []
         for care in cares:
             user = db.query(User).filter(User.id == care.userId).first()
-            result.append({
-                "id": care.id,
-                "userFullName": user.fullName if user else "Unknown",
-                "floor": care.floor,
-                "ward": care.ward,
-                "receipt_date": care.receipt_date,
-                "expire_date": care.expire_date,
-                "active": care.active
-            })
+            result.append(InpatientCareResponse(
+                id=care.id,
+                userId=care.userId,
+                userFullName=user.fullName if user else "Unknown",
+                medCenterId=care.medCenterId,
+                floor=care.floor,
+                ward=care.ward,
+                receipt_date=str(care.receipt_date) if care.receipt_date else "",
+                expire_date=str(care.expire_date) if care.expire_date else "",
+                active=care.active  # Теперь точно передаётся
+            ))
         return result
 
     @app.post("/inpatient-cares")
