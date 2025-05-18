@@ -84,6 +84,17 @@ class QRCode(Base):
 
     user = relationship("User", back_populates="qr_code")
 
+class ReceptionSchedule(Base):
+    __tablename__ = "reception_schedule"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doctorId = Column(Integer, ForeignKey('doctors.userId'))
+    userId = Column(Integer, ForeignKey('users.id'))
+    date = Column(String)
+    time = Column(String)
+    reason = Column(String, nullable=True)
+    active = Column(String)
+
 class User(Base):
     __tablename__ = "users"
 
@@ -108,7 +119,12 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # Pydantic models
 class UserCreate(BaseModel):
@@ -172,21 +188,6 @@ class LoginResponse(BaseModel):
     full_name: str
     center_name: Optional[str]
 
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-class MedicalCenterResponse(BaseModel):
-    idCenter: int
-    centerName: str
-    centerDescription: Optional[str]
-    centerAddress: str
-    centerNumber: str
-
     class RejectReason(BaseModel):
         reason: str
 
@@ -200,6 +201,37 @@ class MedicalCenterResponse(BaseModel):
         active: str
         reason: Optional[str] = None
 
+    class MedicalCenterCreate(BaseModel):
+        idCenter: int
+        centerName: str
+        centerDescription: Optional[str] = None
+        centerAddress: str
+        centerNumber: str
+
+    class MedicalCenterResponse(BaseModel):
+        idCenter: int
+        centerName: str
+        centerDescription: Optional[str]
+        centerAddress: str
+        centerNumber: str
+
+    @app.post("/med-centers", response_model=MedicalCenterResponse)
+    def create_medical_center(center: MedicalCenterCreate, db: Session = Depends(get_db)):
+        db_center = MedicalCenter(**center.dict())
+        db.add(db_center)
+        db.commit()
+        db.refresh(db_center)
+        return db_center
+
+    @app.delete("/med-centers/{center_id}")
+    def delete_medical_center(center_id: int, db: Session = Depends(get_db)):
+        center = db.query(MedicalCenter).filter(MedicalCenter.idCenter == center_id).first()
+        if not center:
+            raise HTTPException(status_code=404, detail="Medical center not found")
+
+        db.delete(center)
+        db.commit()
+        return {"message": "Medical center deleted successfully"}
 
     @app.get("/inpatient-cares", response_model=List[InpatientCareResponse])
     def get_inpatient_cares(med_center_id: int, active: str = "true", db: Session = Depends(get_db)):
@@ -235,6 +267,37 @@ class MedicalCenterResponse(BaseModel):
         db.commit()
         db.refresh(db_care)
         return db_care
+
+    @app.get("/doctor/appointments")
+    def get_doctor_appointments(
+            doctorId: int,
+            date: str,
+            active: Optional[str] = None,
+            db: Session = Depends(get_db)
+    ):
+        query = db.query(ReceptionSchedule).filter(
+            ReceptionSchedule.doctorId == doctorId,
+            ReceptionSchedule.date == date
+        )
+
+        if active is not None:
+            query = query.filter(ReceptionSchedule.active == active)
+
+        appointments = query.all()
+
+        result = []
+        for app in appointments:
+            user = db.query(User).filter(User.id == app.userId).first()
+            result.append({
+                "id": app.id,
+                "userId": app.userId,
+                "fullName": user.fullName if user else "Неизвестный пациент",
+                "time": app.time,
+                "reason": app.reason,
+                "active": app.active
+            })
+
+        return result
 
     @app.patch("/inpatient-cares/{care_id}")
     def update_inpatient_care(care_id: int, active: str, db: Session = Depends(get_db)):
@@ -283,12 +346,41 @@ class MedicalCenterResponse(BaseModel):
         db.commit()
         return {"message": "Feedback rejected"}
 
+class MedicalCenterResponse(BaseModel):
+        idCenter: int
+        centerName: str
+        centerDescription: Optional[str]
+        centerAddress: str
+        centerNumber: str
+
 @app.get("/med-centers", response_model=List[MedicalCenterResponse])
 def get_medical_centers(db: Session = Depends(get_db)):
     centers = db.query(MedicalCenter).all()
     return centers
 
+class MedicalCenterUpdate(BaseModel):
+    centerName: Optional[str] = None
+    centerDescription: Optional[str] = None
+    centerAddress: Optional[str] = None
+    centerNumber: Optional[str] = None
 
+@app.put("/med-centers/{center_id}", response_model=MedicalCenterResponse)
+def update_medical_center(
+    center_id: int,
+    center_update: MedicalCenterUpdate,
+    db: Session = Depends(get_db)
+):
+    db_center = db.query(MedicalCenter).filter(MedicalCenter.idCenter == center_id).first()
+    if not db_center:
+        raise HTTPException(status_code=404, detail="Medical center not found")
+
+    update_data = center_update.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_center, key, value)
+
+    db.commit()
+    db.refresh(db_center)
+    return db_center
 
 @app.post("/login-with-key", response_model=LoginResponse)
 def login_with_key(request: LicenseKeyRequest, db: Session = Depends(get_db)):
