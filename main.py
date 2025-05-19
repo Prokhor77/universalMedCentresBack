@@ -499,13 +499,48 @@ def update_appointment_status(
 
     appointment.active = active
 
-    # Если нужно очистить данные
+    # Если нужно очистить даннык
     if clear_data:
         appointment.userId = None
         appointment.reason = None
 
     db.commit()
     return {"message": "Appointment updated"}
+
+
+@app.post("/appointments")
+def create_appointment(
+        doctorId: int,
+        userId: int,
+        date: str,
+        time: str,
+        reason: Optional[str] = None,
+        db: Session = Depends(get_db)
+):
+    # Проверяем существование пользователя и врача
+    db_user = db.query(User).filter(User.id == userId).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db_doctor = db.query(User).filter(User.id == doctorId).first()
+    if not db_doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+
+    # Создаем новую запись
+    new_appointment = ReceptionSchedule(
+        doctorId=doctorId,
+        userId=userId,
+        date=date,
+        time=time,
+        reason=reason,
+        active="true"
+    )
+
+    db.add(new_appointment)
+    db.commit()
+    db.refresh(new_appointment)
+
+    return {"message": "Appointment created successfully"}
 
 @app.put("/med-centers/{center_id}", response_model=MedicalCenterResponse)
 def update_medical_center(
