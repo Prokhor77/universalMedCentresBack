@@ -1,6 +1,8 @@
+import shutil
+import uuid
 from datetime import datetime
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from sqlalchemy import Boolean, create_engine, Column, Integer, String, ForeignKey, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -11,6 +13,9 @@ import os
 
 QR_CODE_DIR = "qr_codes"
 os.makedirs(QR_CODE_DIR, exist_ok=True)
+
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Database setup
 DATABASE_URL = "sqlite:///./main1.db"
@@ -83,6 +88,34 @@ class QRCode(Base):
     path = Column(String, nullable=False)
 
     user = relationship("User", back_populates="qr_code")
+
+
+class Record(Base):
+    __tablename__ = "records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    userId = Column(Integer, ForeignKey('users.id'))
+    doctorId = Column(Integer)
+    description = Column(String)
+    assignment = Column(String)
+    paidOrFree = Column(String)
+    price = Column(Integer, nullable=True)
+    time_start = Column(String)
+    time_end = Column(String)
+    medCenterId = Column(Integer, ForeignKey('med_centers.idCenter'))
+
+    med_center = relationship("MedicalCenter")
+    photos = relationship("RecordPhoto", back_populates="record")  # Добавлено отношение к фото
+
+
+class RecordPhoto(Base):
+    __tablename__ = "record_photos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    record_id = Column(Integer, ForeignKey('records.id'))
+    photo_path = Column(String)
+
+    record = relationship("Record", back_populates="photos")
 
 class ReceptionSchedule(Base):
     __tablename__ = "reception_schedule"
@@ -363,6 +396,116 @@ class MedicalCenterUpdate(BaseModel):
     centerDescription: Optional[str] = None
     centerAddress: Optional[str] = None
     centerNumber: Optional[str] = None
+
+
+class RecordPhotoCreate(BaseModel):
+    photo_path: str
+
+
+class RecordPhotoResponse(BaseModel):
+    id: int
+    photo_path: str
+
+    class Config:
+        from_attributes = True
+
+
+class RecordCreate(BaseModel):
+    userId: int
+    doctorId: int
+    description: str
+    assignment: str
+    paidOrFree: str
+    price: Optional[int] = None
+    time_start: str
+    time_end: str
+    medCenterId: int
+    photos: List[str] = []  # Список путей к фото
+
+
+class RecordResponse(BaseModel):
+    id: int
+    userId: int
+    doctorId: int
+    description: str
+    assignment: str
+    paidOrFree: str
+    price: Optional[int] = None
+    time_start: str
+    time_end: str
+    medCenterId: int
+    photos: List[RecordPhotoResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+@app.post("/records")
+async def create_record(record: RecordCreate, db: Session = Depends(get_db)):
+    # Создаем запись
+    db_record = Record(
+        userId=record.userId,
+        doctorId=record.doctorId,
+        description=record.description,
+        assignment=record.assignment,
+        paidOrFree=record.paidOrFree,
+        price=record.price,
+        time_start=record.time_start,
+        time_end=record.time_end,
+        medCenterId=record.medCenterId
+    )
+    db.add(db_record)
+    db.commit()
+    db.refresh(db_record)
+
+    # Добавляем фото
+    for photo_path in record.photos:
+        db_photo = RecordPhoto(record_id=db_record.id, photo_path=photo_path)
+        db.add(db_photo)
+
+    db.commit()
+    return db_record
+
+
+@app.post("/records/upload-photos")
+async def upload_photos(files: List[UploadFile] = File(...)):
+    uploaded_paths = []
+    for file in files:
+        try:
+            file_ext = os.path.splitext(file.filename)[1]
+            unique_filename = f"{uuid.uuid4()}{file_ext}"
+            file_path = os.path.join(UPLOAD_DIR, unique_filename)
+
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+
+            uploaded_paths.append(file_path)
+        except Exception as e:
+            continue  # Пропускаем файлы с ошибками
+
+    return {"paths": uploaded_paths}
+
+
+@app.patch("/appointments/{app_id}")
+def update_appointment_status(
+        app_id: int,
+        active: str,
+        db: Session = Depends(get_db),
+        clear_data: bool = False  # Новый параметр для очистки данных
+):
+    appointment = db.query(ReceptionSchedule).filter(ReceptionSchedule.id == app_id).first()
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+
+    appointment.active = active
+
+    # Если нужно очистить данные
+    if clear_data:
+        appointment.userId = None
+        appointment.reason = None
+
+    db.commit()
+    return {"message": "Appointment updated"}
 
 @app.put("/med-centers/{center_id}", response_model=MedicalCenterResponse)
 def update_medical_center(
