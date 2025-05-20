@@ -2,7 +2,7 @@ import shutil
 import uuid
 from datetime import datetime
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy import Boolean, create_engine, Column, Integer, String, ForeignKey, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 import qrcode
 import os
+
+from starlette.staticfiles import StaticFiles
 
 QR_CODE_DIR = "qr_codes"
 os.makedirs(QR_CODE_DIR, exist_ok=True)
@@ -158,6 +160,9 @@ def get_db():
         yield db
     finally:
         db.close()
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 
 # Pydantic models
 class UserCreate(BaseModel):
@@ -352,7 +357,7 @@ class LoginResponse(BaseModel):
             User.medCenterId == med_center_id,
             User.fullName.ilike(f"%{query}%")
         ).all()
-        return [{"id": u.id, "fullName": u.fullName} for u in users]
+        return [{"id": u.id, "fullName": u.fullName, "role": u.role} for u in users]
 
     @app.get("/feedbacks", response_model=List[FeedbackResponse])
     def get_feedbacks(db: Session = Depends(get_db)):
@@ -427,6 +432,8 @@ class RecordResponse(BaseModel):
     id: int
     userId: int
     doctorId: int
+    doctorFullName: Optional[str] = None
+    doctorWorkType: Optional[str] = None
     description: str
     assignment: str
     paidOrFree: str
@@ -439,6 +446,81 @@ class RecordResponse(BaseModel):
     class Config:
         from_attributes = True
 
+@app.get("/doctors/{doctor_id}/free-slots")
+def get_free_slots(doctor_id: int, db: Session = Depends(get_db)):
+    today = datetime.now().strftime("%d.%m.%Y")
+    slots = db.query(ReceptionSchedule).filter(
+        ReceptionSchedule.doctorId == doctor_id,
+        ReceptionSchedule.date >= today,
+        ReceptionSchedule.userId == None
+    ).all()
+    return [
+        {
+            "id": slot.id,
+            "date": slot.date,
+            "time": slot.time,
+            "reason": slot.reason
+        }
+        for slot in slots
+    ]
+
+class DoctorInfoResponse(BaseModel):
+    work_type: Optional[str] = None
+    category: Optional[str] = None
+
+@app.get("/doctors/{doctor_id}/info", response_model=DoctorInfoResponse)
+def get_doctor_info(doctor_id: int, db: Session = Depends(get_db)):
+    doctor = db.query(Doctor).filter(Doctor.userId == doctor_id).first()
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    return DoctorInfoResponse(
+        work_type=doctor.work_type,
+        category=doctor.category
+    )
+
+@app.get("/records/patient/{user_id}", response_model=List[RecordResponse])
+def get_patient_records(user_id: int, db: Session = Depends(get_db)):
+    records = db.query(Record).filter(Record.userId == user_id).all()
+
+    result = []
+    for record in records:
+        photos = db.query(RecordPhoto).filter(RecordPhoto.record_id == record.id).all()
+        # Получаем ФИО врача
+        doctor_user = db.query(User).filter(User.id == record.doctorId).first()
+        doctor_full_name = doctor_user.fullName if doctor_user else "Неизвестно"
+        # Получаем специализацию врача
+        doctor = db.query(Doctor).filter(Doctor.userId == record.doctorId).first()
+        doctor_work_type = doctor.work_type if doctor else "Неизвестно"
+
+        result.append(RecordResponse(
+            id=record.id,
+            userId=record.userId,
+            doctorId=record.doctorId,
+            doctorFullName=doctor_full_name,
+            doctorWorkType=doctor_work_type,
+            description=record.description,
+            assignment=record.assignment,
+            paidOrFree=record.paidOrFree,
+            price=record.price,
+            time_start=record.time_start,
+            time_end=record.time_end,
+            medCenterId=record.medCenterId,
+            photos=[RecordPhotoResponse(
+                id=photo.id,
+                photo_path=photo.photo_path
+            ) for photo in photos]
+        ))
+
+    return result
+
+@app.get("/records/user/{user_id}", response_model=List[RecordResponse])
+def get_user_records(user_id: int, db: Session = Depends(get_db)):
+    records = db.query(Record).filter(Record.userId == user_id).all()
+
+    if not records:
+        raise HTTPException(status_code=404, detail="No records found for this user")
+
+    return records
 
 @app.post("/records")
 async def create_record(record: RecordCreate, db: Session = Depends(get_db)):
@@ -479,19 +561,21 @@ async def upload_photos(files: List[UploadFile] = File(...)):
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
-            uploaded_paths.append(file_path)
+            uploaded_paths.append(f"/uploads/{unique_filename}")  # Измените путь здесь
         except Exception as e:
-            continue  # Пропускаем файлы с ошибками
+            continue
 
     return {"paths": uploaded_paths}
 
 
 @app.patch("/appointments/{app_id}")
 def update_appointment_status(
-        app_id: int,
-        active: str,
-        db: Session = Depends(get_db),
-        clear_data: bool = False  # Новый параметр для очистки данных
+    app_id: int,
+    active: str,
+    userId: Optional[int] = Query(None),
+    reason: Optional[str] = Query(None),  # <-- добавь это
+    clear_data: bool = False,
+    db: Session = Depends(get_db)
 ):
     appointment = db.query(ReceptionSchedule).filter(ReceptionSchedule.id == app_id).first()
     if not appointment:
@@ -499,7 +583,12 @@ def update_appointment_status(
 
     appointment.active = active
 
-    # Если нужно очистить даннык
+    if userId is not None:
+        appointment.userId = userId
+
+    if reason is not None:
+        appointment.reason = reason  # <-- сохраняем причину
+
     if clear_data:
         appointment.userId = None
         appointment.reason = None
