@@ -66,7 +66,6 @@ class Doctor(Base):
     feedbacks = relationship("Feedback", back_populates="doctor")
     user = relationship("User", back_populates="doctor")
 
-
 class Feedback(Base):
     __tablename__ = "feedback"
 
@@ -141,11 +140,15 @@ class User(Base):
     email = Column(String)
     address = Column(String)
     tgId = Column(Integer)
-    photo = Column(String)
 
     inpatient_cares = relationship("InpatientCare", back_populates="user")
     med_center = relationship("MedicalCenter", back_populates="users")
-    doctor = relationship("Doctor", back_populates="user", uselist=False)  # Add this line
+    doctor = relationship(
+        "Doctor",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
     feedbacks = relationship("Feedback", back_populates="user")  # You already have this
     qr_code = relationship("QRCode", uselist=False, back_populates="user")
 
@@ -173,6 +176,9 @@ class UserCreate(BaseModel):
     email: Optional[str] = None
     address: Optional[str] = None
     tgId: Optional[int] = None
+    work_type: Optional[str] = None
+    experience: Optional[str] = None
+    category: Optional[str] = None
 
 class InpatientCareCreate(BaseModel):
     userId: int
@@ -209,7 +215,10 @@ class UserResponse(BaseModel):
     email: Optional[str] = None
     address: Optional[str] = None
     tgId: Optional[int] = None
-    centerName: Optional[str] = None  # Make this explicitly optional
+    centerName: Optional[str] = None
+    work_type: Optional[str] = None
+    experience: Optional[str] = None
+    category: Optional[str] = None
 
     class Config:
         from_attributes = True  # Update from orm_mode to from_attributes for Pydantic v2
@@ -668,32 +677,56 @@ def login_with_key(request: LicenseKeyRequest, db: Session = Depends(get_db)):
 
 @app.get("/users", response_model=List[UserResponse])
 def get_users(db: Session = Depends(get_db)):
-    # Добавляем фильтр для исключения пользователей с ролью 'sudo-admin'
     users = db.query(User).filter(User.role != 'sudo-admin').all()
-
-    user_responses = [
-        UserResponse(
-            id=user.id,
-            key=user.key,
-            role=user.role,
-            medCenterId=user.medCenterId,
-            fullName=user.fullName,
-            email=user.email,
-            address=user.address,
-            tgId=user.tgId,
-            centerName=user.med_center.centerName if user.med_center else None
+    user_responses = []
+    for user in users:
+        doctor = None
+        if user.role == "doctor":
+            doctor = db.query(Doctor).filter(Doctor.userId == user.id).first()
+        user_responses.append(
+            UserResponse(
+                id=user.id,
+                key=user.key,
+                role=user.role,
+                medCenterId=user.medCenterId,
+                fullName=user.fullName,
+                email=user.email,
+                address=user.address,
+                tgId=user.tgId,
+                centerName=user.med_center.centerName if user.med_center else None,
+                work_type=doctor.work_type if doctor else None,
+                experience=doctor.experience if doctor else None,
+                category=doctor.category if doctor else None
+            )
         )
-        for user in users
-    ]
     return user_responses
 
 
 @app.post("/users", response_model=UserResponse)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = User(**user.dict())
+    db_user = User(
+        key=user.key,
+        role=user.role,
+        medCenterId=user.medCenterId,
+        fullName=user.fullName,
+        email=user.email,
+        address=user.address,
+        tgId=user.tgId
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
+    # Если это врач, добавляем в doctors
+    if user.role == "doctor":
+        db_doctor = Doctor(
+            userId=db_user.id,
+            work_type=user.work_type,
+            experience=user.experience,
+            category=user.category
+        )
+        db.add(db_doctor)
+        db.commit()
 
     # Генерация QR-кода только для ролей, отличных от 'sudo-admin'
     if user.role != 'sudo-admin':
@@ -719,7 +752,6 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         except Exception as e:
             print(f"Error generating QR code: {str(e)}")
 
-    # Получение информации о медицинском центре
     center_name = None
     if db_user.medCenterId:
         center = db.query(MedicalCenter).filter(MedicalCenter.idCenter == db_user.medCenterId).first()
@@ -758,6 +790,17 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Удаляем QR-код, если есть
+    qr_code = db.query(QRCode).filter(QRCode.userId == user_id).first()
+    if qr_code:
+        # Удаляем файл QR-кода с диска
+        if qr_code.path and os.path.exists(qr_code.path):
+            try:
+                os.remove(qr_code.path)
+            except Exception as e:
+                print(f"Error deleting QR code file: {e}")
+        db.delete(qr_code)
+
     db.delete(db_user)
     db.commit()
-    return {"message": "User deleted successfully"}
+    return {"message": "User and QR code deleted successfully"}
