@@ -180,6 +180,13 @@ class UserCreate(BaseModel):
     experience: Optional[str] = None
     category: Optional[str] = None
 
+
+class SlotCreate(BaseModel):
+    doctorId: int
+    date: str
+    time: str
+
+
 class InpatientCareCreate(BaseModel):
     userId: int
     floor: int
@@ -303,6 +310,21 @@ class LoginResponse(BaseModel):
             ))
         return result
 
+    @app.post("/reception-schedule/batch")
+    def create_slots(slots: List[SlotCreate], db: Session = Depends(get_db)):
+        for slot in slots:
+            new_slot = ReceptionSchedule(
+                doctorId=slot.doctorId,
+                userId=None,
+                date=slot.date,
+                time=slot.time,
+                reason=None,
+                active="false"
+            )
+            db.add(new_slot)
+        db.commit()
+        return {"message": "Slots created"}
+
     @app.post("/inpatient-cares")
     def create_inpatient_care(care: InpatientCareCreate, med_center_id: int, db: Session = Depends(get_db)):
         db_care = InpatientCare(
@@ -334,7 +356,7 @@ class LoginResponse(BaseModel):
 
         result = []
         for app in appointments:
-            user = db.query(User).filter(User.id == app.userId).first()
+            user = db.query(User).filter(User.id == app.userId).first() if app.userId else None
             result.append({
                 "id": app.id,
                 "userId": app.userId,
@@ -468,6 +490,7 @@ def get_free_slots(doctor_id: int, db: Session = Depends(get_db)):
             "id": slot.id,
             "date": slot.date,
             "time": slot.time,
+            "userId": slot.userId,
             "reason": slot.reason
         }
         for slot in slots
@@ -609,29 +632,32 @@ def update_appointment_status(
 @app.post("/appointments")
 def create_appointment(
         doctorId: int,
-        userId: int,
-        date: str,
-        time: str,
+        userId: Optional[int] = None,
+        date: str = ...,
+        time: str = ...,
         reason: Optional[str] = None,
         db: Session = Depends(get_db)
 ):
-    # Проверяем существование пользователя и врача
-    db_user = db.query(User).filter(User.id == userId).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-
+    # Проверяем существование врача
     db_doctor = db.query(User).filter(User.id == doctorId).first()
     if not db_doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # Создаем новую запись
+    # Проверяем пользователя только если userId задан и не 0
+    if userId and userId != 0:
+        db_user = db.query(User).filter(User.id == userId).first()
+        if not db_user:
+            raise HTTPException(status_code=404, detail="User not found")
+    else:
+        userId = None
+
     new_appointment = ReceptionSchedule(
         doctorId=doctorId,
         userId=userId,
         date=date,
         time=time,
         reason=reason,
-        active="true"
+        active="true" if userId else "false"
     )
 
     db.add(new_appointment)
