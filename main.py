@@ -361,6 +361,7 @@ class LoginResponse(BaseModel):
                 "id": app.id,
                 "userId": app.userId,
                 "fullName": user.fullName if user else "Неизвестный пациент",
+                "date": app.date,  # <-- добавь это!
                 "time": app.time,
                 "reason": app.reason,
                 "active": app.active
