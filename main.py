@@ -8,6 +8,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel
 from typing import Optional, List
+from datetime import datetime, timedelta
 import qrcode
 import os
 
@@ -367,6 +368,36 @@ class LoginResponse(BaseModel):
                 "active": app.active
             })
 
+        return result
+
+    @app.get("/doctor/appointments/range")
+    def get_doctor_appointments_range(
+            doctorId: int,
+            start_date: str,
+            end_date: str,
+            db: Session = Depends(get_db)
+    ):
+        # start_date и end_date в формате "дд.мм.гггг"
+        start = datetime.strptime(start_date, "%d.%m.%Y")
+        end = datetime.strptime(end_date, "%d.%m.%Y")
+        appointments = db.query(ReceptionSchedule).filter(
+            ReceptionSchedule.doctorId == doctorId,
+            ReceptionSchedule.date >= start_date,
+            ReceptionSchedule.date <= end_date
+        ).all()
+
+        result = []
+        for app in appointments:
+            user = db.query(User).filter(User.id == app.userId).first() if app.userId else None
+            result.append({
+                "id": app.id,
+                "userId": app.userId,
+                "fullName": user.fullName if user else "Неизвестный пациент",
+                "date": app.date,
+                "time": app.time,
+                "reason": app.reason,
+                "active": app.active
+            })
         return result
 
     @app.patch("/inpatient-cares/{care_id}")
