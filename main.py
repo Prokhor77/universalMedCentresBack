@@ -1,7 +1,8 @@
 import shutil
 import uuid
+from random import randint
 import app
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Body
 from sqlalchemy import Boolean, create_engine, Column, Integer, String, ForeignKey, Date, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -10,6 +11,7 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 import qrcode
 import os
+tg_codes = {}
 
 from starlette.staticfiles import StaticFiles
 
@@ -25,7 +27,6 @@ DATABASE_URL = "sqlite:///./main1.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-
 
 class MedicalCenter(Base):
     __tablename__ = "med_centers"
@@ -271,6 +272,29 @@ class LoginResponse(BaseModel):
         centerDescription: Optional[str]
         centerAddress: str
         centerNumber: str
+
+    @app.post("/tg-bind/start")
+    def tg_bind_start(user_id: int):
+        code = str(randint(1000, 9999))
+        # Можно временно хранить код в памяти, если нужно (например, в dict), но в базе не сохраняем!
+        # Например, можно использовать глобальный dict (НЕ для продакшена!):
+        global tg_codes
+        tg_codes[code] = user_id
+        return {"code": code}
+
+    @app.post("/tg-bind/confirm")
+    def tg_bind_confirm(code: str = Body(...), tg_id: int = Body(...), db: Session = Depends(get_db)):
+        user_id = tg_codes.get(code)
+        if not user_id:
+            raise HTTPException(status_code=404, detail="Code not found or expired")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.tgId = tg_id
+        db.commit()
+        # После успешной привязки удаляем код
+        del tg_codes[code]
+        return {"message": f"Аккаунт {user.fullName} успешно привязан"}
 
     @app.post("/med-centers", response_model=MedicalCenterResponse)
     def create_medical_center(center: MedicalCenterCreate, db: Session = Depends(get_db)):
