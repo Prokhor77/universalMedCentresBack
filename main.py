@@ -84,7 +84,7 @@ class Feedback(Base):
 
 class QRCode(Base):
     __tablename__ = "qr_codes"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
     userId = Column(Integer, ForeignKey('users.id'))
     path = Column(String, nullable=False)
 
@@ -140,6 +140,7 @@ class User(Base):
     email = Column(String)
     address = Column(String)
     tgId = Column(Integer)
+    education = Column(String)
 
     inpatient_cares = relationship("InpatientCare", back_populates="user")
     med_center = relationship("MedicalCenter", back_populates="users")
@@ -227,6 +228,7 @@ class UserResponse(BaseModel):
     work_type: Optional[str] = None
     experience: Optional[str] = None
     category: Optional[str] = None
+    education: Optional[str] = None
 
     class Config:
         from_attributes = True  # Update from orm_mode to from_attributes for Pydantic v2
@@ -314,6 +316,15 @@ class LoginResponse(BaseModel):
     @app.get("/debug/qr-codes")
     def debug_qr_codes(db: Session = Depends(get_db)):
         return db.query(QRCode).all()
+
+    @app.patch("/users/{user_id}/education")
+    def update_education(user_id: int, db: Session = Depends(get_db)):
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.education = "true"
+        db.commit()
+        return {"message": "Education updated"}
 
     @app.post("/reception-schedule/batch")
     def create_slots(slots: List[SlotCreate], db: Session = Depends(get_db)):
@@ -789,7 +800,8 @@ def get_users(db: Session = Depends(get_db)):
                 centerName=user.med_center.centerName if user.med_center else None,
                 work_type=doctor.work_type if doctor else None,
                 experience=doctor.experience if doctor else None,
-                category=doctor.category if doctor else None
+                category=doctor.category if doctor else None,
+                education=user.education
             )
         )
     return user_responses
@@ -804,7 +816,8 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         fullName=user.fullName,
         email=user.email,
         address=user.address,
-        tgId=user.tgId
+        tgId=user.tgId,
+        education="false"
     )
     db.add(db_user)
     db.commit()
@@ -838,8 +851,9 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
             qr_filename = f"user_{db_user.id}_qr.png"
             qr_path = os.path.join(QR_CODE_DIR, qr_filename)
             img.save(qr_path)
+            db_path = f"/{QR_CODE_DIR}/{qr_filename}"
 
-            qr_code = QRCode(userId=db_user.id, path=qr_path)
+            qr_code = QRCode(userId=db_user.id, path=db_path)
             db.add(qr_code)
             db.commit()
         except Exception as e:
