@@ -1,9 +1,8 @@
 import shutil
 import uuid
-from datetime import datetime
-
+import app
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
-from sqlalchemy import Boolean, create_engine, Column, Integer, String, ForeignKey, Date
+from sqlalchemy import Boolean, create_engine, Column, Integer, String, ForeignKey, Date, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from pydantic import BaseModel
@@ -22,6 +21,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Database setup
 DATABASE_URL = "sqlite:///./main1.db"
+
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -84,7 +84,6 @@ class Feedback(Base):
 
 class QRCode(Base):
     __tablename__ = "qr_codes"
-
     id = Column(Integer, primary_key=True, index=True)
     userId = Column(Integer, ForeignKey('users.id'))
     path = Column(String, nullable=False)
@@ -166,6 +165,7 @@ def get_db():
         db.close()
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/qr_codes", StaticFiles(directory="qr_codes"), name="qr_codes")
 
 
 # Pydantic models
@@ -311,6 +311,10 @@ class LoginResponse(BaseModel):
             ))
         return result
 
+    @app.get("/debug/qr-codes")
+    def debug_qr_codes(db: Session = Depends(get_db)):
+        return db.query(QRCode).all()
+
     @app.post("/reception-schedule/batch")
     def create_slots(slots: List[SlotCreate], db: Session = Depends(get_db)):
         for slot in slots:
@@ -370,35 +374,28 @@ class LoginResponse(BaseModel):
 
         return result
 
-    @app.get("/doctor/appointments/range")
-    def get_doctor_appointments_range(
-            doctorId: int,
-            start_date: str,
-            end_date: str,
-            db: Session = Depends(get_db)
-    ):
-        # start_date и end_date в формате "дд.мм.гггг"
-        start = datetime.strptime(start_date, "%d.%m.%Y")
-        end = datetime.strptime(end_date, "%d.%m.%Y")
-        appointments = db.query(ReceptionSchedule).filter(
-            ReceptionSchedule.doctorId == doctorId,
-            ReceptionSchedule.date >= start_date,
-            ReceptionSchedule.date <= end_date
-        ).all()
 
-        result = []
-        for app in appointments:
-            user = db.query(User).filter(User.id == app.userId).first() if app.userId else None
-            result.append({
-                "id": app.id,
-                "userId": app.userId,
-                "fullName": user.fullName if user else "Неизвестный пациент",
-                "date": app.date,
-                "time": app.time,
-                "reason": app.reason,
-                "active": app.active
-            })
-        return result
+    @app.get("/users/{user_id}/qrcode")
+    def get_qrcode(user_id: int, db: Session = Depends(get_db)):
+        qrcode = db.query(QRCode).filter(QRCode.userId == user_id).first()
+        if not qrcode:
+            raise HTTPException(status_code=404, detail="QR code not found")
+        return qrcode
+
+    @app.get("/med-centers/{center_id}/doctors/average-rating")
+    def get_average_doctor_rating(center_id: int, db: Session = Depends(get_db)):
+        # Получаем всех врачей медцентра
+        doctors = db.query(Doctor).join(User).filter(User.medCenterId == center_id).all()
+        if not doctors:
+            return {"average_rating": None}
+        doctor_ids = [doc.userId for doc in doctors]
+        # Получаем все отзывы по этим врачам
+        feedbacks = db.query(Feedback).filter(Feedback.doctorId.in_(doctor_ids), Feedback.active == "true").all()
+        if not feedbacks:
+            return {"average_rating": None}
+        avg = sum(f.grade for f in feedbacks) / len(feedbacks)
+        return {"average_rating": round(avg, 2)}
+
 
     @app.patch("/inpatient-cares/{care_id}")
     def update_inpatient_care(care_id: int, active: str, db: Session = Depends(get_db)):
