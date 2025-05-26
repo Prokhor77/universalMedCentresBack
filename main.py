@@ -342,6 +342,36 @@ class LoginResponse(BaseModel):
         db.refresh(db_care)
         return db_care
 
+    @app.get("/doctor/appointments/range")
+    def get_doctor_appointments_range(
+            doctorId: int,
+            start_date: str,
+            end_date: str,
+            db: Session = Depends(get_db)
+    ):
+        query = db.query(ReceptionSchedule).filter(
+            ReceptionSchedule.doctorId == doctorId,
+            ReceptionSchedule.date >= start_date,
+            ReceptionSchedule.date <= end_date
+        )
+
+        appointments = query.all()
+
+        result = []
+        for app in appointments:
+            user = db.query(User).filter(User.id == app.userId).first() if app.userId else None
+            result.append({
+                "id": app.id,
+                "userId": app.userId if app.userId else 0,
+                "fullName": user.fullName if user else "Неизвестный пациент",
+                "date": app.date,
+                "time": app.time,
+                "reason": app.reason,
+                "active": app.active
+            })
+
+        return result
+
     @app.get("/doctor/appointments")
     def get_doctor_appointments(
             doctorId: int,
@@ -657,6 +687,14 @@ def update_appointment_status(
     db.commit()
     return {"message": "Appointment updated"}
 
+@app.delete("/appointments/{app_id}")
+def delete_appointment(app_id: int, db: Session = Depends(get_db)):
+    appointment = db.query(ReceptionSchedule).filter(ReceptionSchedule.id == app_id).first()
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    db.delete(appointment)
+    db.commit()
+    return {"message": "Appointment deleted successfully"}
 
 @app.post("/appointments")
 def create_appointment(
