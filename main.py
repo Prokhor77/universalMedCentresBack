@@ -282,6 +282,25 @@ class LoginResponse(BaseModel):
         tg_codes[code] = user_id
         return {"code": code}
 
+    @app.get("/users/{user_id}/tg-id")
+    def get_user_tg_id(user_id: int, db: Session = Depends(get_db)):
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"tgId": user.tgId}
+
+    class TgUnlinkRequest(BaseModel):
+        user_id: int
+
+    @app.post("/tg-bind/unlink")
+    def tg_unlink(request: TgUnlinkRequest, db: Session = Depends(get_db)):
+        user = db.query(User).filter(User.id == request.user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.tgId = None
+        db.commit()
+        return {"message": "Telegram аккаунт отвязан"}
+
     @app.post("/tg-bind/confirm")
     def tg_bind_confirm(code: str = Body(...), tg_id: int = Body(...), db: Session = Depends(get_db)):
         user_id = tg_codes.get(code)
