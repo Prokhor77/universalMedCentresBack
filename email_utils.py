@@ -1,4 +1,7 @@
+import os
 import smtplib
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -26,12 +29,26 @@ def send_record_email(to_email, patient_name, doctor_name, doctor_specialization
         <p><b>Назначения:</b> {assignment}</p>
         <p><b>Тип приема:</b> {paid_or_free}</p>
         <p><b>Цена:</b> {price if price else '—'}</p>
-        <p><b>Фото:</b></p>
-        {''.join([f'<img src="{url}" width="300"/><br>' for url in photo_urls]) if photo_urls else 'Нет фото'}
+        <p><b>Фото:</b> во вложениях</p>
     </body>
     </html>
     """
     msg.attach(MIMEText(html, 'html'))
+
+    # Добавляем фото как вложения
+    for url in photo_urls:
+        # url должен быть локальным путем к файлу, например: "/uploads/abc.jpg"
+        file_path = url
+        if file_path.startswith("/"):
+            file_path = file_path[1:]
+        if not os.path.exists(file_path):
+            continue
+        with open(file_path, "rb") as f:
+            part = MIMEBase('application', 'octet-stream')
+            part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header('Content-Disposition', f'attachment; filename="{os.path.basename(file_path)}"')
+            msg.attach(part)
 
     try:
         server = smtplib.SMTP(smtp_server, smtp_port)

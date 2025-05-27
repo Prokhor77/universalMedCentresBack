@@ -724,6 +724,40 @@ def notify_record_complete(body: RecordCompleteNotifyRequest, db: Session = Depe
         )
     return {"message": "Уведомления отправлены"}
 
+@app.get("/stats/appointments-today")
+def get_appointments_today(
+    med_center_id: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    today = datetime.now().strftime("%Y-%m-%d")
+    count = db.query(Record).filter(
+        Record.medCenterId == med_center_id,
+        Record.time_end.startswith(today)
+    ).count()
+    return {"count": count}
+
+@app.get("/stats/doctors-count")
+def get_doctors_count(
+    med_center_id: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    count = db.query(User).filter(
+        User.role == "doctor",
+        User.medCenterId == med_center_id
+    ).count()
+    return {"count": count}
+
+@app.get("/stats/inpatient-patients-count")
+def get_inpatient_patients_count(
+    med_center_id: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    count = db.query(InpatientCare).filter(
+        InpatientCare.medCenterId == med_center_id,
+        InpatientCare.active == "true"
+    ).count()
+    return {"count": count}
+
 @app.post("/records")
 async def create_record(record: RecordCreate, db: Session = Depends(get_db)):
     # Создаем запись

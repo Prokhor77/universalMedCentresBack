@@ -1,4 +1,6 @@
 import asyncio
+import os
+
 from aiogram import Bot, Dispatcher, types, F
 import requests
 
@@ -26,15 +28,21 @@ def send_record_telegram(tg_id, patient_name, doctor_name, doctor_specialization
         f"<b>Цена:</b> {price if price else '—'}\n"
     )
     send_telegram_message(tg_id, text)
-    # Отправка фото отдельными сообщениями
+    # Отправка фото как документов
     for url in photo_urls:
         try:
-            requests.post(
-                f"https://api.telegram.org/bot{API_TOKEN}/sendPhoto",
-                data={"chat_id": tg_id, "photo": f"{BASE_URL}{url}"}
-            )
+            file_path = url
+            if file_path.startswith("/"):
+                file_path = file_path[1:]
+            with open(file_path, "rb") as f:
+                files = {'document': (os.path.basename(file_path), f)}
+                requests.post(
+                    f"https://api.telegram.org/bot{API_TOKEN}/sendDocument",
+                    data={"chat_id": tg_id},
+                    files=files
+                )
         except Exception as e:
-            print(f"Ошибка отправки фото в Telegram: {e}")
+            print(f"Ошибка отправки файла в Telegram: {e}")
 
 def send_telegram_message(tg_id, text):
     url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
