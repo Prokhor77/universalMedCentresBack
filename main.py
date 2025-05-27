@@ -11,6 +11,10 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 import qrcode
 import os
+
+from bot import send_telegram_message, send_record_telegram
+from email_utils import send_appointment_email, send_record_email
+
 tg_codes = {}
 
 from starlette.staticfiles import StaticFiles
@@ -667,6 +671,59 @@ def get_user_records(user_id: int, db: Session = Depends(get_db)):
 
     return records
 
+class RecordCompleteNotifyRequest(BaseModel):
+    user_id: int
+    doctor_id: int
+    description: str
+    assignment: str
+    paid_or_free: str
+    price: Optional[int] = None
+    date: str
+    time: str
+    photo_urls: List[str]
+
+@app.post("/notify/record-complete")
+def notify_record_complete(body: RecordCompleteNotifyRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == body.user_id).first()
+    doctor = db.query(User).filter(User.id == body.doctor_id).first()
+    doctor_info = db.query(Doctor).filter(Doctor.userId == body.doctor_id).first()
+
+    patient_name = user.fullName if user else "Неизвестно"
+    doctor_name = doctor.fullName if doctor else "Неизвестно"
+    doctor_specialization = doctor_info.work_type if doctor_info else "Неизвестно"
+
+    # Email
+    if user and user.email:
+        send_record_email(
+            to_email=user.email,
+            patient_name=patient_name,
+            doctor_name=doctor_name,
+            doctor_specialization=doctor_specialization,
+            date=body.date,
+            time=body.time,
+            description=body.description,
+            assignment=body.assignment,
+            paid_or_free=body.paid_or_free,
+            price=body.price,
+            photo_urls=body.photo_urls
+        )
+    # Telegram
+    if user and user.tgId:
+        send_record_telegram(
+            tg_id=user.tgId,
+            patient_name=patient_name,
+            doctor_name=doctor_name,
+            doctor_specialization=doctor_specialization,
+            date=body.date,
+            time=body.time,
+            description=body.description,
+            assignment=body.assignment,
+            paid_or_free=body.paid_or_free,
+            price=body.price,
+            photo_urls=body.photo_urls
+        )
+    return {"message": "Уведомления отправлены"}
+
 @app.post("/records")
 async def create_record(record: RecordCreate, db: Session = Depends(get_db)):
     # Создаем запись
@@ -718,7 +775,7 @@ def update_appointment_status(
     app_id: int,
     active: str,
     userId: Optional[int] = Query(None),
-    reason: Optional[str] = Query(None),  # <-- добавь это
+    reason: Optional[str] = Query(None),
     clear_data: bool = False,
     db: Session = Depends(get_db)
 ):
@@ -732,13 +789,38 @@ def update_appointment_status(
         appointment.userId = userId
 
     if reason is not None:
-        appointment.reason = reason  # <-- сохраняем причину
+        appointment.reason = reason
 
     if clear_data:
         appointment.userId = None
         appointment.reason = None
 
     db.commit()
+
+    # --- ДОБАВЬ ЭТО ---
+    if active == "true" and userId is not None:
+        user = db.query(User).filter(User.id == userId).first()
+        doctor = db.query(User).filter(User.id == appointment.doctorId).first()
+        doctor_info = db.query(Doctor).filter(Doctor.userId == appointment.doctorId).first()
+        if user and user.email:
+            send_appointment_email(
+                to_email=user.email,
+                doctor_name=doctor.fullName if doctor else "Неизвестно",
+                doctor_specialization=doctor_info.work_type if doctor_info else "Неизвестно",
+                date=appointment.date,
+                time=appointment.time
+            )
+        if user and user.tgId:
+            text = (
+                f"Вы записались к врачу!\n\n"
+                f"Врач: {doctor.fullName if doctor else 'Неизвестно'}\n"
+                f"Специализация: {doctor_info.work_type if doctor_info else 'Неизвестно'}\n"
+                f"Дата: {appointment.date}\n"
+                f"Время: {appointment.time}"
+            )
+            send_telegram_message(user.tgId, text)
+    # --- КОНЕЦ ДОБАВЛЕНИЯ ---
+
     return {"message": "Appointment updated"}
 
 @app.delete("/appointments/{app_id}")
