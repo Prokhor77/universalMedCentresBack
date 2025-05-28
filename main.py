@@ -2,6 +2,7 @@ import shutil
 import uuid
 from random import randint
 import app
+from cryptography.fernet import Fernet
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Body, BackgroundTasks
 from sqlalchemy import Boolean, create_engine, Column, Integer, String, ForeignKey, Date, func
 from sqlalchemy.ext.declarative import declarative_base
@@ -1600,6 +1601,34 @@ class AllCentersReportRequest(BaseModel):
     format: str = "docx"
 
 
+FERNET_KEY = b'vvYfxJNatmT36RxbF156vIJxxSIwayOPyv9o76b1vq0='
+fernet = Fernet(FERNET_KEY)
+
+def encrypt_key(plain_key: str) -> str:
+    return fernet.encrypt(plain_key.encode()).decode()
+
+def decrypt_key(encrypted_key: str) -> str:
+    return fernet.decrypt(encrypted_key.encode()).decode()
+
+class DecryptKeyRequest(BaseModel):
+    encrypted_key: str
+
+class EncryptKeyRequest(BaseModel):
+    plain_key: str
+
+@app.post("/decrypt-key/")
+def api_decrypt_key(request: DecryptKeyRequest):
+    try:
+        return {"plain_key": decrypt_key(request.encrypted_key)}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/encrypt-key/")
+def api_encrypt_key(request: EncryptKeyRequest):
+    try:
+        return {"encrypted_key": encrypt_key(request.plain_key)}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/reports/generate-all")
 async def generate_all_centers_report(request: AllCentersReportRequest, background_tasks: BackgroundTasks):
@@ -2103,17 +2132,26 @@ def update_medical_center(
 
 @app.post("/login-with-key", response_model=LoginResponse)
 def login_with_key(request: LicenseKeyRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.key == request.key).first()
-    if not user:
+    users = db.query(User).all()
+    found_user = None
+    for user in users:
+        try:
+            decrypted = decrypt_key(user.key)
+            if decrypted == request.key:
+                found_user = user
+                break
+        except Exception:
+            continue
+    if not found_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    center_name = user.med_center.centerName if user.med_center else None
+    center_name = found_user.med_center.centerName if found_user.med_center else None
 
     return LoginResponse(
-        role=user.role,
-        userId=user.id,
-        medCenterId=user.medCenterId,
-        full_name=user.fullName if user.fullName else "",
+        role=found_user.role,
+        userId=found_user.id,
+        medCenterId=found_user.medCenterId,
+        full_name=found_user.fullName if found_user.fullName else "",
         center_name=center_name
     )
 
@@ -2144,77 +2182,6 @@ def get_users(db: Session = Depends(get_db)):
             )
         )
     return user_responses
-
-
-@app.post("/users", response_model=UserResponse)
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = User(
-        key=user.key,
-        role=user.role,
-        medCenterId=user.medCenterId,
-        fullName=user.fullName,
-        email=user.email,
-        address=user.address,
-        tgId=user.tgId,
-        education="false"
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-
-    # Если это врач, добавляем в doctors
-    if user.role == "doctor":
-        db_doctor = Doctor(
-            userId=db_user.id,
-            work_type=user.work_type,
-            experience=user.experience,
-            category=user.category
-        )
-        db.add(db_doctor)
-        db.commit()
-
-    # Генерация QR-кода только для ролей, отличных от 'sudo-admin'
-    if user.role != 'sudo-admin':
-        try:
-            qr = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECT_L,
-                box_size=10,
-                border=4,
-            )
-            qr_data = f"UserID:{db_user.id}|Key:{db_user.key}"
-            qr.add_data(qr_data)
-            qr.make(fit=True)
-
-            img = qr.make_image(fill_color="black", back_color="white")
-            qr_filename = f"user_{db_user.id}_qr.png"
-            qr_path = os.path.join(QR_CODE_DIR, qr_filename)
-            img.save(qr_path)
-            db_path = f"/{QR_CODE_DIR}/{qr_filename}"
-
-            qr_code = QRCode(userId=db_user.id, path=db_path)
-            db.add(qr_code)
-            db.commit()
-        except Exception as e:
-            print(f"Error generating QR code: {str(e)}")
-
-    center_name = None
-    if db_user.medCenterId:
-        center = db.query(MedicalCenter).filter(MedicalCenter.idCenter == db_user.medCenterId).first()
-        center_name = center.centerName if center else None
-
-    return UserResponse(
-        id=db_user.id,
-        key=db_user.key,
-        role=db_user.role,
-        medCenterId=db_user.medCenterId,
-        fullName=db_user.fullName,
-        email=db_user.email,
-        address=db_user.address,
-        tgId=db_user.tgId,
-        centerName=center_name
-    )
-
 
 @app.put("/users/{user_id}", response_model=UserResponse)
 def update_user(user_id: int, user: UserCreate, db: Session = Depends(get_db)):
@@ -2432,23 +2399,6 @@ def update_medical_center(
     db.refresh(db_center)
     return db_center
 
-@app.post("/login-with-key", response_model=LoginResponse)
-def login_with_key(request: LicenseKeyRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.key == request.key).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    center_name = user.med_center.centerName if user.med_center else None
-
-    return LoginResponse(
-        role=user.role,
-        userId=user.id,
-        medCenterId=user.medCenterId,
-        full_name=user.fullName if user.fullName else "",
-        center_name=center_name
-    )
-
-
 @app.get("/users", response_model=List[UserResponse])
 def get_users(db: Session = Depends(get_db)):
     users = db.query(User).filter(User.role != 'sudo-admin').all()
@@ -2479,8 +2429,9 @@ def get_users(db: Session = Depends(get_db)):
 
 @app.post("/users", response_model=UserResponse)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    encrypted_key = encrypt_key(user.key)
     db_user = User(
-        key=user.key,
+        key=encrypted_key,  # сохраняем зашифрованный ключ
         role=user.role,
         medCenterId=user.medCenterId,
         fullName=user.fullName,
