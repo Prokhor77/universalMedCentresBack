@@ -784,6 +784,67 @@ async def create_record(record: RecordCreate, db: Session = Depends(get_db)):
     db.commit()
     return db_record
 
+@app.get("/stats/average-appointment-time")
+def get_average_appointment_time(med_center_id: int, db: Session = Depends(get_db)):
+    today = datetime.now().strftime("%Y-%m-%d")
+    records = db.query(Record).filter(
+        Record.medCenterId == med_center_id,
+        Record.time_end.startswith(today)
+    ).all()
+    total_seconds = 0
+    count = 0
+    for r in records:
+        if r.time_start and r.time_end:
+            try:
+                t1 = datetime.strptime(r.time_start, "%Y-%m-%d %H:%M:%S")
+                t2 = datetime.strptime(r.time_end, "%Y-%m-%d %H:%M:%S")
+                diff = (t2 - t1).total_seconds()
+                if diff > 0:
+                    total_seconds += diff
+                    count += 1
+            except Exception:
+                continue
+    avg_minutes = round(total_seconds / 60 / count, 1) if count else 0
+    return {"average_time_minutes": avg_minutes}
+
+@app.get("/stats/income-today")
+def get_income_today(med_center_id: int, db: Session = Depends(get_db)):
+    today = datetime.now().strftime("%Y-%m-%d")
+    records = db.query(Record).filter(
+        Record.medCenterId == med_center_id,
+        Record.time_end.startswith(today)
+    ).all()
+    total = sum(r.price or 0 for r in records)
+    return {"income": total}
+
+@app.get("/stats/paid-free-counts")
+def get_paid_free_counts(med_center_id: int, db: Session = Depends(get_db)):
+    today = datetime.now().strftime("%Y-%m-%d")
+    records = db.query(Record).filter(
+        Record.medCenterId == med_center_id,
+        Record.time_end.startswith(today)
+    ).all()
+    paid = sum(1 for r in records if r.paidOrFree == "payed")
+    free = sum(1 for r in records if r.paidOrFree == "free")
+    return {"paid": paid, "free": free}
+
+@app.get("/stats/feedbacks-in-progress")
+def get_feedbacks_in_progress(med_center_id: int, db: Session = Depends(get_db)):
+    count = db.query(Feedback).filter(
+        Feedback.medCenterId == med_center_id,
+        Feedback.active == "in_progress"
+    ).count()
+    return {"count": count}
+
+@app.get("/stats/feedbacks-week")
+def get_feedbacks_week(med_center_id: int, db: Session = Depends(get_db)):
+    today = datetime.now()
+    week_ago = today - timedelta(days=7)
+    count = db.query(Feedback).filter(
+        Feedback.medCenterId == med_center_id,
+        Feedback.active == "true"
+    ).count()
+    return {"count": count}
 
 @app.post("/records/upload-photos")
 async def upload_photos(files: List[UploadFile] = File(...)):
@@ -803,6 +864,29 @@ async def upload_photos(files: List[UploadFile] = File(...)):
 
     return {"paths": uploaded_paths}
 
+class FeedbackCreate(BaseModel):
+    userId: int
+    doctorId: int
+    medCenterId: int
+    grade: int
+    description: str
+    active: str = "in_progress"
+
+@app.post("/feedbacks", response_model=FeedbackCreate)
+def create_feedback(feedback: FeedbackCreate, db: Session = Depends(get_db)):
+
+    db_feedback = Feedback(
+        userId=feedback.userId,
+        doctorId=feedback.doctorId,
+        medCenterId=feedback.medCenterId,
+        grade=feedback.grade,
+        description=feedback.description,
+        active=feedback.active
+    )
+    db.add(db_feedback)
+    db.commit()
+    db.refresh(db_feedback)
+    return feedback
 
 @app.patch("/appointments/{app_id}")
 def update_appointment_status(
