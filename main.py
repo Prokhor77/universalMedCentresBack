@@ -888,6 +888,57 @@ def create_feedback(feedback: FeedbackCreate, db: Session = Depends(get_db)):
     db.refresh(db_feedback)
     return feedback
 
+@app.get("/med-centers/with-rating")
+def get_med_centers_with_rating(db: Session = Depends(get_db)):
+    centers = db.query(MedicalCenter).all()
+    result = []
+    for center in centers:
+        # Получаем всех врачей центра
+        doctors = db.query(Doctor).join(User).filter(User.medCenterId == center.idCenter).all()
+        doctor_ids = [doc.userId for doc in doctors]
+        # Получаем отзывы по этим врачам
+        feedbacks = db.query(Feedback).filter(Feedback.doctorId.in_(doctor_ids), Feedback.active == "true").all()
+        avg_rating = round(sum(f.grade for f in feedbacks) / len(feedbacks), 2) if feedbacks else None
+        result.append({
+            "idCenter": center.idCenter,
+            "centerName": center.centerName,
+            "centerAddress": center.centerAddress,
+            "centerNumber": center.centerNumber,
+            "average_rating": avg_rating
+        })
+    return result
+
+@app.get("/med-centers/{center_id}/doctors/with-rating")
+def get_doctors_with_rating(center_id: int, db: Session = Depends(get_db)):
+    doctors = db.query(Doctor).join(User).filter(User.medCenterId == center_id).all()
+    result = []
+    for doc in doctors:
+        feedbacks = db.query(Feedback).filter(Feedback.doctorId == doc.userId, Feedback.active == "true").all()
+        avg_rating = round(sum(f.grade for f in feedbacks) / len(feedbacks), 2) if feedbacks else None
+        user = db.query(User).filter(User.id == doc.userId).first()
+        result.append({
+            "doctorId": doc.userId,
+            "fullName": user.fullName if user else "",
+            "work_type": doc.work_type,
+            "category": doc.category,
+            "average_rating": avg_rating
+        })
+    return result
+
+@app.get("/doctors/{doctor_id}/feedbacks")
+def get_doctor_feedbacks(doctor_id: int, db: Session = Depends(get_db)):
+    feedbacks = db.query(Feedback).filter(Feedback.doctorId == doctor_id, Feedback.active == "true").all()
+    result = []
+    for fb in feedbacks:
+        user = db.query(User).filter(User.id == fb.userId).first()
+        result.append({
+            "id": fb.id,
+            "grade": fb.grade,
+            "description": fb.description,
+            "userFullName": user.fullName if user else "Аноним"
+        })
+    return result
+
 @app.patch("/appointments/{app_id}")
 def update_appointment_status(
     app_id: int,
