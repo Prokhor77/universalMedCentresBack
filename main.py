@@ -2186,6 +2186,32 @@ def get_appointments_month(med_center_id: int, db: Session = Depends(get_db)):
     ).count()
     return {"count": records}
 
+@app.get("/stats/appointments-week")
+def get_appointments_week(db: Session = Depends(get_db)):
+    today = datetime.now().date()
+    result = []
+    for i in range(6, -1, -1):  # 6 дней назад до сегодня
+        day = today - timedelta(days=i)
+        day_str = day.strftime("%Y-%m-%d")
+        count = db.query(Record).filter(Record.time_end.startswith(day_str)).count()
+        result.append({"date": day_str, "count": count})
+    return result
+
+@app.get("/stats/inpatient-week")
+def get_inpatient_week(db: Session = Depends(get_db)):
+    today = datetime.now().date()
+    result = []
+    for i in range(6, -1, -1):
+        day = today - timedelta(days=i)
+        day_ts = int(datetime.combine(day, datetime.min.time()).timestamp() * 1000)
+        count = db.query(InpatientCare).filter(
+            InpatientCare.receipt_date <= str(day_ts),
+            ((InpatientCare.expire_date == None) | (InpatientCare.expire_date == "") | (InpatientCare.expire_date > str(day_ts))),
+            InpatientCare.active == "true"
+        ).count()
+        result.append({"date": day.strftime("%Y-%m-%d"), "count": count})
+    return result
+
 @app.get("/stats/appointments-by-date")
 def get_appointments_by_date(med_center_id: int, date: str, db: Session = Depends(get_db)):
     count = db.query(Record).filter(
