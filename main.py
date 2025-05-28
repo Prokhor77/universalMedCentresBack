@@ -2,7 +2,7 @@ import shutil
 import uuid
 from random import randint
 import app
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Body
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Body, BackgroundTasks
 from sqlalchemy import Boolean, create_engine, Column, Integer, String, ForeignKey, Date, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -2196,6 +2196,82 @@ def get_appointments_week(db: Session = Depends(get_db)):
         count = db.query(Record).filter(Record.time_end.startswith(day_str)).count()
         result.append({"date": day_str, "count": count})
     return result
+
+class ReportRequest(BaseModel):
+    med_center_id: int
+    period_days: int  # 1, 7, or 30
+    email: str
+    format: str = "docx"
+
+
+@app.post("/reports/generate")
+async def generate_report(request: ReportRequest, background_tasks: BackgroundTasks):
+    """Generate a report and send it via email"""
+    # Validate period_days
+    if request.period_days not in [1, 7, 30]:
+        raise HTTPException(status_code=400, detail="Period must be 1, 7, or 30 days")
+
+    # Validate format
+    if request.format not in ["docx", "pdf"]:
+        raise HTTPException(status_code=400, detail="Format must be 'docx' or 'pdf'")
+
+    # Get database connection
+    db = SessionLocal()
+
+    try:
+        # Verify medical center exists
+        med_center = db.query(MedicalCenter).filter(MedicalCenter.idCenter == request.med_center_id).first()
+        if not med_center:
+            raise HTTPException(status_code=404, detail="Medical center not found")
+
+        # Generate report in background
+        background_tasks.add_task(
+            generate_and_send_report,
+            request.med_center_id,
+            request.period_days,
+            request.email,
+            request.format
+        )
+
+        return {"message": f"Report generation started. It will be sent to {request.email} when ready."}
+
+    finally:
+        db.close()
+
+
+def generate_and_send_report(med_center_id: int, period_days: int, email: str, format: str):
+    try:
+        # Открываем соединение с базой данных
+        import sqlite3
+        db_connection = sqlite3.connect("main1.db")  # путь к вашей базе
+
+        # Генерируем отчет
+        if format == "docx":
+            from report_utils import generate_report_docx, send_report_email
+            report_file = generate_report_docx(med_center_id, period_days, db_connection)
+        else:  # pdf
+            from report_utils import generate_report_pdf, send_report_email
+            report_file = generate_report_pdf(med_center_id, period_days, db_connection)
+
+        # Отправляем отчет по email
+        send_report_email(email, report_file, period_days)
+
+        db_connection.close()
+
+    except Exception as e:
+        print(f"Error generating report: {e}")
+
+
+@app.get("/users/{user_id}/email")
+def get_user_email(user_id: int, db: Session = Depends(get_db)):
+    """Get the email of a user"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"email": user.email}
+
+
+print("Report endpoints added successfully")
 
 @app.get("/stats/inpatient-week")
 def get_inpatient_week(db: Session = Depends(get_db)):
