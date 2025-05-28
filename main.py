@@ -14,7 +14,7 @@ import os
 
 from bot import send_telegram_message, send_record_telegram
 from email_utils import send_appointment_email, send_record_email
-from report_utils import generate_and_send_user_report
+from report_utils import generate_and_send_user_report, generate_and_send_all_centers_report
 
 tg_codes = {}
 
@@ -1593,6 +1593,28 @@ class UserReportRequest(BaseModel):
     period_days: int  # 1, 7, 30
     email: str
     format: str = "docx"
+
+class AllCentersReportRequest(BaseModel):
+    period_days: int  # 1, 7, 30
+    email: str
+    format: str = "docx"
+
+
+
+@app.post("/reports/generate-all")
+async def generate_all_centers_report(request: AllCentersReportRequest, background_tasks: BackgroundTasks):
+    if request.period_days not in [1, 7, 30]:
+        raise HTTPException(status_code=400, detail="Period must be 1, 7, or 30 days")
+    if request.format not in ["docx", "pdf"]:
+        raise HTTPException(status_code=400, detail="Format must be 'docx' or 'pdf'")
+
+    background_tasks.add_task(
+        generate_and_send_all_centers_report,
+        request.period_days,
+        request.email,
+        request.format
+    )
+    return {"message": f"Report generation started. It will be sent to {request.email} when ready."}
 
 @app.post("/reports/generate-user")
 async def generate_user_report(request: UserReportRequest, background_tasks: BackgroundTasks):

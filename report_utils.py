@@ -103,6 +103,217 @@ def generate_user_report_docx(user_id, period_days, db_connection):
     doc.save(filename)
     return filename
 
+def generate_and_send_all_centers_report(period_days: int, email: str, format: str):
+    import sqlite3
+    db_connection = sqlite3.connect("main1.db")
+    if format == "docx":
+        report_file = generate_all_centers_report_docx(period_days, db_connection)
+    else:
+        report_file = generate_all_centers_report_pdf(period_days, db_connection)
+    send_report_email(email, report_file, period_days)
+    db_connection.close()
+
+def generate_all_centers_report_pdf(period_days, db_connection):
+    from fpdf import FPDF
+    from datetime import datetime, timedelta
+    import transliterate
+
+    def clean_for_pdf(text):
+        if not text:
+            return ""
+        replacements = {
+            '№': 'No.',
+            '©': '(c)',
+            '®': '(R)',
+            '™': '(TM)',
+            '–': '-',
+            '—': '-',
+            '«': '"',
+            '»': '"',
+            '…': '...',
+            '•': '*',
+            '₽': 'RUB',
+            '€': 'EUR',
+            '£': 'GBP',
+            '°': ' degrees',
+            '±': '+/-',
+            '×': 'x',
+            '÷': '/',
+            '≤': '<=',
+            '≥': '>=',
+            '≠': '!=',
+            '≈': '~=',
+            '∞': 'infinity'
+        }
+        for char, replacement in replacements.items():
+            if char in text:
+                text = text.replace(char, replacement)
+        return text
+
+    def safe_pdf(text):
+        if not text:
+            return ""
+        try:
+            return clean_for_pdf(transliterate.translit(str(text), 'ru', reversed=True))
+        except Exception:
+            return clean_for_pdf(str(text))
+
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=period_days)
+    end_date_str = end_date.strftime("%Y-%m-%d")
+    start_date_str = start_date.strftime("%Y-%m-%d")
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, safe_pdf("Obshchiy otchet po medtsentram"), ln=True, align="C")
+    pdf.set_font('Arial', '', 12)
+    pdf.cell(0, 8, safe_pdf(f"Period: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}"), ln=True)
+
+    cursor = db_connection.cursor()
+    cursor.execute("SELECT idCenter, centerName, centerAddress, centerNumber FROM med_centers")
+    centers = cursor.fetchall()
+
+    for center in centers:
+        idCenter, name, address, number = center
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(0, 8, safe_pdf(f"Medtsentr: {name}"), ln=True)
+        pdf.set_font('Arial', '', 12)
+        pdf.cell(0, 8, safe_pdf(f"Adres: {address}"), ln=True)
+        pdf.cell(0, 8, safe_pdf(f"Telefon: {number}"), ln=True)
+
+        # Статистика по центру
+        cursor.execute("""
+            SELECT COUNT(*) FROM records WHERE medCenterId = ? AND time_end BETWEEN ? AND ?
+        """, (idCenter, start_date_str, end_date_str))
+        appointments_count = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT SUM(price) FROM records WHERE medCenterId = ? AND time_end BETWEEN ? AND ?
+        """, (idCenter, start_date_str, end_date_str))
+        total_income = cursor.fetchone()[0] or 0
+
+        # Количество пациентов на стационаре
+        cursor.execute("""
+            SELECT COUNT(*) FROM inpatient_care WHERE medCenterId = ? AND active = 'true'
+        """, (idCenter,))
+        inpatient_count = cursor.fetchone()[0]
+
+        # Количество платных и бесплатных приёмов
+        cursor.execute("""
+            SELECT paidOrFree, COUNT(*) FROM records
+            WHERE medCenterId = ? AND time_end BETWEEN ? AND ?
+            GROUP BY paidOrFree
+        """, (idCenter, start_date_str, end_date_str))
+        paid_count = 0
+        free_count = 0
+        for row in cursor.fetchall():
+            if row[0] == 'payed':
+                paid_count = row[1]
+            elif row[0] == 'free':
+                free_count = row[1]
+
+        # Количество пользователей по ролям
+        cursor.execute("""
+            SELECT role, COUNT(*) FROM users WHERE medCenterId = ? GROUP BY role
+        """, (idCenter,))
+        role_counts = {row[0]: row[1] for row in cursor.fetchall()}
+        user_count = role_counts.get('user', 0)
+        doctor_count = role_counts.get('doctor', 0)
+        admin_count = role_counts.get('admin', 0)
+
+        pdf.cell(0, 8, safe_pdf(f"Priemov: {appointments_count}"), ln=True)
+        pdf.cell(0, 8, safe_pdf(f"Dokhod: {total_income} BYN"), ln=True)
+        pdf.cell(0, 8, safe_pdf(f"Statsionar: {inpatient_count}"), ln=True)
+        pdf.cell(0, 8, safe_pdf(f"Platnykh priemov: {paid_count}"), ln=True)
+        pdf.cell(0, 8, safe_pdf(f"Besplatnykh priemov: {free_count}"), ln=True)
+        pdf.cell(0, 8, safe_pdf(f"Polzovateley (user): {user_count}"), ln=True)
+        pdf.cell(0, 8, safe_pdf(f"Vrachey (doctor): {doctor_count}"), ln=True)
+        pdf.cell(0, 8, safe_pdf(f"Adminov (admin): {admin_count}"), ln=True)
+        pdf.ln(5)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"reports/all_centers_report_{period_days}days_{timestamp}.pdf"
+    pdf.output(filename)
+    return filename
+
+def generate_all_centers_report_docx(period_days, db_connection):
+    from docx import Document
+    from datetime import datetime, timedelta
+
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=period_days)
+    end_date_str = end_date.strftime("%Y-%m-%d")
+    start_date_str = start_date.strftime("%Y-%m-%d")
+
+    doc = Document()
+    doc.add_heading('Общий отчет по всем медцентрам', 0)
+    doc.add_paragraph(f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}")
+
+    cursor = db_connection.cursor()
+    cursor.execute("SELECT idCenter, centerName, centerAddress, centerNumber FROM med_centers")
+    centers = cursor.fetchall()
+
+    for center in centers:
+        idCenter, name, address, number = center
+        doc.add_heading(f"Медцентр: {name}", level=1)
+        doc.add_paragraph(f"Адрес: {address}")
+        doc.add_paragraph(f"Телефон: {number}")
+
+        # Статистика по центру
+        cursor.execute("""
+            SELECT COUNT(*) FROM records WHERE medCenterId = ? AND time_end BETWEEN ? AND ?
+        """, (idCenter, start_date_str, end_date_str))
+        appointments_count = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT SUM(price) FROM records WHERE medCenterId = ? AND time_end BETWEEN ? AND ?
+        """, (idCenter, start_date_str, end_date_str))
+        total_income = cursor.fetchone()[0] or 0
+
+        # Количество пациентов на стационаре
+        cursor.execute("""
+            SELECT COUNT(*) FROM inpatient_care WHERE medCenterId = ? AND active = 'true'
+        """, (idCenter,))
+        inpatient_count = cursor.fetchone()[0]
+
+        # Количество платных и бесплатных приёмов
+        cursor.execute("""
+            SELECT paidOrFree, COUNT(*) FROM records
+            WHERE medCenterId = ? AND time_end BETWEEN ? AND ?
+            GROUP BY paidOrFree
+        """, (idCenter, start_date_str, end_date_str))
+        paid_count = 0
+        free_count = 0
+        for row in cursor.fetchall():
+            if row[0] == 'payed':
+                paid_count = row[1]
+            elif row[0] == 'free':
+                free_count = row[1]
+
+        # Количество пользователей по ролям
+        cursor.execute("""
+            SELECT role, COUNT(*) FROM users WHERE medCenterId = ? GROUP BY role
+        """, (idCenter,))
+        role_counts = {row[0]: row[1] for row in cursor.fetchall()}
+        user_count = role_counts.get('user', 0)
+        doctor_count = role_counts.get('doctor', 0)
+        admin_count = role_counts.get('admin', 0)
+
+        doc.add_paragraph(f"Приемов: {appointments_count}")
+        doc.add_paragraph(f"Доход: {total_income} BYN")
+        doc.add_paragraph(f"Пациентов на стационаре: {inpatient_count}")
+        doc.add_paragraph(f"Платных приемов: {paid_count}")
+        doc.add_paragraph(f"Бесплатных приемов: {free_count}")
+        doc.add_paragraph(f"Пользователей (user): {user_count}")
+        doc.add_paragraph(f"Врачей (doctor): {doctor_count}")
+        doc.add_paragraph(f"Админов (admin): {admin_count}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"reports/all_centers_report_{period_days}days_{timestamp}.docx"
+    doc.save(filename)
+    return filename
+
 def generate_user_report_pdf(user_id, period_days, db_connection):
     from fpdf import FPDF
     from datetime import datetime, timedelta
