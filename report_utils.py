@@ -18,6 +18,162 @@ from fpdf import FPDF
 REPORTS_DIR = "reports"
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
+def generate_and_send_user_report(user_id: int, period_days: int, email: str, format: str):
+    try:
+        import sqlite3
+        db_connection = sqlite3.connect("main1.db")
+        if format == "docx":
+            report_file = generate_user_report_docx(user_id, period_days, db_connection)
+        else:
+            report_file = generate_user_report_pdf(user_id, period_days, db_connection)
+        send_report_email(email, report_file, period_days)
+        db_connection.close()
+    except Exception as e:
+        print(f"Error generating user report: {e}")
+
+def generate_user_report_docx(user_id, period_days, db_connection):
+    from docx import Document
+    from docx.shared import Pt
+    from datetime import datetime, timedelta
+
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=period_days)
+    end_date_str = end_date.strftime("%Y-%m-%d")
+    start_date_str = start_date.strftime("%Y-%m-%d")
+
+    doc = Document()
+    doc.add_heading('Отчет по пациенту', 0)
+
+    cursor = db_connection.cursor()
+    cursor.execute("SELECT fullName, email, address FROM users WHERE id = ?", (user_id,))
+    user = cursor.fetchone()
+    if user:
+        doc.add_paragraph(f"ФИО: {user[0]}")
+        doc.add_paragraph(f"Email: {user[1]}")
+        doc.add_paragraph(f"Адрес: {user[2]}")
+
+    doc.add_paragraph(f"Период: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}")
+
+    # Общая статистика
+    cursor.execute("""
+        SELECT COUNT(*) FROM records
+        WHERE userId = ? AND time_end BETWEEN ? AND ?
+    """, (user_id, start_date_str, end_date_str))
+    appointments_count = cursor.fetchone()[0]
+    doc.add_paragraph(f"Всего приемов за период: {appointments_count}")
+
+    cursor.execute("""
+        SELECT SUM(price) FROM records
+        WHERE userId = ? AND time_end BETWEEN ? AND ?
+    """, (user_id, start_date_str, end_date_str))
+    total_spent = cursor.fetchone()[0] or 0
+    doc.add_paragraph(f"Общая сумма: {total_spent} BYN")
+
+    # Детализация приемов
+    doc.add_heading('Детализация приемов', level=1)
+    cursor.execute("""
+        SELECT time_start, time_end, d_user.fullName, d.work_type, description, assignment, paidOrFree, price
+        FROM records r
+        LEFT JOIN users d_user ON r.doctorId = d_user.id
+        LEFT JOIN doctors d ON d.userId = r.doctorId
+        WHERE r.userId = ? AND r.time_end BETWEEN ? AND ?
+        ORDER BY r.time_end DESC
+    """, (user_id, start_date_str, end_date_str))
+    appointments = cursor.fetchall()
+    if appointments:
+        table = doc.add_table(rows=1, cols=8)
+        hdr_cells = table.rows[0].cells
+        hdr_cells[0].text = 'Начало'
+        hdr_cells[1].text = 'Конец'
+        hdr_cells[2].text = 'Врач'
+        hdr_cells[3].text = 'Специализация'
+        hdr_cells[4].text = 'Описание'
+        hdr_cells[5].text = 'Назначения'
+        hdr_cells[6].text = 'Тип'
+        hdr_cells[7].text = 'Стоимость'
+        for row in appointments:
+            row_cells = table.add_row().cells
+            for i, val in enumerate(row):
+                row_cells[i].text = str(val) if val is not None else ''
+    else:
+        doc.add_paragraph('Нет приемов за выбранный период.')
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"reports/user_report_{user_id}_{period_days}days_{timestamp}.docx"
+    doc.save(filename)
+    return filename
+
+def generate_user_report_pdf(user_id, period_days, db_connection):
+    from fpdf import FPDF
+    from datetime import datetime, timedelta
+    from unidecode import unidecode  # pip install unidecode
+
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=period_days)
+    end_date_str = end_date.strftime("%Y-%m-%d")
+    start_date_str = start_date.strftime("%Y-%m-%d")
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, unidecode("Patient Report"), ln=True, align="C")
+    pdf.set_font('Arial', '', 12)
+
+    cursor = db_connection.cursor()
+    cursor.execute("SELECT fullName, email, address FROM users WHERE id = ?", (user_id,))
+    user = cursor.fetchone()
+    if user:
+        pdf.cell(0, 8, unidecode(f"Name: {user[0]}"), ln=True)
+        pdf.cell(0, 8, unidecode(f"Email: {user[1]}"), ln=True)
+        pdf.cell(0, 8, unidecode(f"Address: {user[2]}"), ln=True)
+
+    pdf.cell(0, 8, unidecode(f"Period: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}"), ln=True)
+
+    cursor.execute("""
+        SELECT COUNT(*) FROM records
+        WHERE userId = ? AND time_end BETWEEN ? AND ?
+    """, (user_id, start_date_str, end_date_str))
+    appointments_count = cursor.fetchone()[0]
+    pdf.cell(0, 8, unidecode(f"Total appointments: {appointments_count}"), ln=True)
+
+    cursor.execute("""
+        SELECT SUM(price) FROM records
+        WHERE userId = ? AND time_end BETWEEN ? AND ?
+    """, (user_id, start_date_str, end_date_str))
+    total_spent = cursor.fetchone()[0] or 0
+    pdf.cell(0, 8, unidecode(f"Total spent: {total_spent} BYN"), ln=True)
+
+    pdf.ln(5)
+    pdf.set_font('Arial', 'B', 12)
+    pdf.cell(0, 8, unidecode("Appointments:"), ln=True)
+    pdf.set_font('Arial', '', 10)
+
+    cursor.execute("""
+        SELECT time_start, time_end, d_user.fullName, d.work_type, description, assignment, paidOrFree, price
+        FROM records r
+        LEFT JOIN users d_user ON r.doctorId = d_user.id
+        LEFT JOIN doctors d ON d.userId = r.doctorId
+        WHERE r.userId = ? AND r.time_end BETWEEN ? AND ?
+        ORDER BY r.time_end DESC
+    """, (user_id, start_date_str, end_date_str))
+    appointments = cursor.fetchall()
+    if appointments:
+        headers = ["Start", "End", "Doctor", "Specialization", "Description", "Assignment", "Type", "Price"]
+        col_widths = [22, 22, 25, 22, 32, 32, 13, 13]
+        for i, header in enumerate(headers):
+            pdf.cell(col_widths[i], 7, unidecode(header), border=1)
+        pdf.ln()
+        for row in appointments:
+            for i, val in enumerate(row):
+                pdf.cell(col_widths[i], 6, unidecode(str(val)) if val is not None else '', border=1)
+            pdf.ln()
+    else:
+        pdf.cell(0, 8, unidecode("No appointments for the selected period."), ln=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"reports/user_report_{user_id}_{period_days}days_{timestamp}.pdf"
+    pdf.output(filename)
+    return filename
 
 def generate_report_docx(med_center_id, period_days, db_connection):
 

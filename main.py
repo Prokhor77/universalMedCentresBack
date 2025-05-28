@@ -14,6 +14,7 @@ import os
 
 from bot import send_telegram_message, send_record_telegram
 from email_utils import send_appointment_email, send_record_email
+from report_utils import generate_and_send_user_report
 
 tg_codes = {}
 
@@ -1586,6 +1587,35 @@ class RecordResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class UserReportRequest(BaseModel):
+    user_id: int
+    period_days: int  # 1, 7, 30
+    email: str
+    format: str = "docx"
+
+@app.post("/reports/generate-user")
+async def generate_user_report(request: UserReportRequest, background_tasks: BackgroundTasks):
+    if request.period_days not in [1, 7, 30]:
+        raise HTTPException(status_code=400, detail="Period must be 1, 7, or 30 days")
+    if request.format not in ["docx", "pdf"]:
+        raise HTTPException(status_code=400, detail="Format must be 'docx' or 'pdf'")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == request.user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        background_tasks.add_task(
+            generate_and_send_user_report,
+            request.user_id,
+            request.period_days,
+            request.email,
+            request.format
+        )
+        return {"message": f"User report generation started. It will be sent to {request.email} when ready."}
+    finally:
+        db.close()
 
 @app.get("/doctors/{doctor_id}/free-slots")
 def get_free_slots(doctor_id: int, db: Session = Depends(get_db)):
