@@ -5,6 +5,38 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+def send_key_email(to_email, key):
+    username = "prohor.odinets@yandex.by"
+    password = "hgrgaosbzvtxdxam"
+    smtp_server = "smtp.yandex.com"
+    smtp_port = 587
+
+    html = f"""
+    <html>
+    <body>
+        <h2>Здравствуйте!</h2>
+        <p>Ваш уникальный ключ для доступа:</p>
+        <div style="font-size:24px;font-weight:bold;color:#4CAF50;background:#f1f1f1;padding:10px;border-radius:5px;">{key}</div>
+        <p>Пожалуйста, используйте этот ключ в своем приложении. Если вы не запрашивали этот ключ, игнорируйте это письмо.</p>
+    </body>
+    </html>
+    """
+
+    msg = MIMEText(html, 'html')
+    msg['Subject'] = "Ваш ключ"
+    msg['From'] = username
+    msg['To'] = to_email
+
+    try:
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(username, password)
+        server.sendmail(username, to_email, msg.as_string())
+        server.quit()
+    except Exception as e:
+        print(f"Ошибка отправки email: {e}")
+        raise
+
 def send_record_email(to_email, patient_name, doctor_name, doctor_specialization, date, time, description, assignment, paid_or_free, price, photo_urls):
     username = "prohor.odinets@yandex.by"
     password = "hgrgaosbzvtxdxam"

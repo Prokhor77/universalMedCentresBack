@@ -14,7 +14,7 @@ import qrcode
 import os
 
 from bot import send_telegram_message, send_record_telegram
-from email_utils import send_appointment_email, send_record_email
+from email_utils import send_appointment_email, send_record_email, send_key_email
 from report_utils import generate_and_send_user_report, generate_and_send_all_centers_report
 
 tg_codes = {}
@@ -1615,6 +1615,33 @@ class DecryptKeyRequest(BaseModel):
 
 class EncryptKeyRequest(BaseModel):
     plain_key: str
+
+class SendKeyRequest(BaseModel):
+    user_id: int
+
+@app.post("/users/send-key")
+def send_key_to_user(request: SendKeyRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user.email:
+        raise HTTPException(status_code=400, detail="User has no email")
+    # Расшифруем ключ
+    try:
+        from cryptography.fernet import Fernet
+        FERNET_KEY = b'vvYfxJNatmT36RxbF156vIJxxSIwayOPyv9o76b1vq0='
+        fernet = Fernet(FERNET_KEY)
+        plain_key = fernet.decrypt(user.key.encode()).decode()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Key decrypt error: {e}")
+
+    # Отправляем письмо
+    try:
+        send_key_email(user.email, plain_key)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Email send error: {e}")
+
+    return {"message": f"Key sent to {user.email}"}
 
 @app.post("/decrypt-key/")
 def api_decrypt_key(request: DecryptKeyRequest):
