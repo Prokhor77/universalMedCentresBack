@@ -46,6 +46,13 @@ class MedicalCenter(Base):
     users = relationship("User", back_populates="med_center")
     feedbacks = relationship("Feedback", back_populates="med_center")  # Add this line
 
+from sqlalchemy import event
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 class InpatientCare(Base):
     __tablename__ = "inpatient_care"
@@ -63,31 +70,29 @@ class InpatientCare(Base):
     med_center = relationship("MedicalCenter")
 
 
-class Doctor(Base):
-    __tablename__ = "doctors"
-
-    userId = Column(Integer, ForeignKey('users.id'), primary_key=True)
-    work_type = Column(String)
-    experience = Column(String)
-    category = Column(String)
-
-    feedbacks = relationship("Feedback", back_populates="doctor")
-    user = relationship("User", back_populates="doctor")
-
 class Feedback(Base):
     __tablename__ = "feedback"
-
     id = Column(Integer, primary_key=True, index=True)
     userId = Column(Integer, ForeignKey('users.id'))
-    doctorId = Column(Integer, ForeignKey('doctors.userId'))
-    medCenterId = Column(Integer, ForeignKey('med_centers.idCenter'))  # Fixed typo here
+    doctorId = Column(Integer, ForeignKey('doctors.userId', ondelete="CASCADE"))
+    medCenterId = Column(Integer, ForeignKey('med_centers.idCenter'))
     grade = Column(Integer)
     description = Column(String)
     active = Column(String)
 
     user = relationship("User", back_populates="feedbacks")
     doctor = relationship("Doctor", back_populates="feedbacks")
-    med_center = relationship("MedicalCenter", back_populates="feedbacks")  # Fixed reference here
+    med_center = relationship("MedicalCenter", back_populates="feedbacks")
+
+class Doctor(Base):
+    __tablename__ = "doctors"
+    userId = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), primary_key=True)
+    work_type = Column(String)
+    experience = Column(String)
+    category = Column(String)
+
+    feedbacks = relationship("Feedback", back_populates="doctor", cascade="all, delete-orphan")
+    user = relationship("User", back_populates="doctor")
 
 class QRCode(Base):
     __tablename__ = "qr_codes"
@@ -402,35 +407,6 @@ class LoginResponse(BaseModel):
         db.refresh(db_care)
         return db_care
 
-    @app.get("/doctor/appointments/range")
-    def get_doctor_appointments_range(
-            doctorId: int,
-            start_date: str,
-            end_date: str,
-            db: Session = Depends(get_db)
-    ):
-        query = db.query(ReceptionSchedule).filter(
-            ReceptionSchedule.doctorId == doctorId,
-            ReceptionSchedule.date >= start_date,
-            ReceptionSchedule.date <= end_date
-        )
-
-        appointments = query.all()
-
-        result = []
-        for app in appointments:
-            user = db.query(User).filter(User.id == app.userId).first() if app.userId else None
-            result.append({
-                "id": app.id,
-                "userId": app.userId if app.userId else 0,
-                "fullName": user.fullName if user else "Неизвестный пациент",
-                "date": app.date,
-                "time": app.time,
-                "reason": app.reason,
-                "active": app.active
-            })
-
-        return result
 
     @app.get("/doctor/appointments")
     def get_doctor_appointments(
@@ -1395,23 +1371,28 @@ class LoginResponse(BaseModel):
         db.refresh(db_care)
         return db_care
 
-    @app.get("/doctor/appointments/range")
-    def get_doctor_appointments_range(
-            doctorId: int,
-            start_date: str,
-            end_date: str,
-            db: Session = Depends(get_db)
-    ):
-        query = db.query(ReceptionSchedule).filter(
-            ReceptionSchedule.doctorId == doctorId,
-            ReceptionSchedule.date >= start_date,
-            ReceptionSchedule.date <= end_date
-        )
+def parse_date(date_str):
+    return datetime.strptime(date_str, "%d.%m.%Y")
 
-        appointments = query.all()
-
-        result = []
-        for app in appointments:
+@app.get("/doctor/appointments/range")
+def get_doctor_appointments_range(
+        doctorId: int,
+        start_date: str,
+        end_date: str,
+        db: Session = Depends(get_db)
+):
+    start = parse_date(start_date)
+    end = parse_date(end_date)
+    appointments = db.query(ReceptionSchedule).filter(
+        ReceptionSchedule.doctorId == doctorId
+    ).all()
+    result = []
+    for app in appointments:
+        try:
+            app_date = parse_date(app.date)
+        except Exception:
+            continue
+        if start <= app_date <= end:
             user = db.query(User).filter(User.id == app.userId).first() if app.userId else None
             result.append({
                 "id": app.id,
@@ -1422,8 +1403,7 @@ class LoginResponse(BaseModel):
                 "reason": app.reason,
                 "active": app.active
             })
-
-        return result
+    return result
 
     @app.get("/doctor/appointments")
     def get_doctor_appointments(
@@ -2348,20 +2328,17 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Удаляем все отзывы, где doctorId = user_id
+    db.query(Feedback).filter(Feedback.doctorId == user_id).delete()
+    # Удаляем врача, если есть
+    db.query(Doctor).filter(Doctor.userId == user_id).delete()
     # Удаляем QR-код, если есть
-    qr_code = db.query(QRCode).filter(QRCode.userId == user_id).first()
-    if qr_code:
-        # Удаляем файл QR-кода с диска
-        if qr_code.path and os.path.exists(qr_code.path):
-            try:
-                os.remove(qr_code.path)
-            except Exception as e:
-                print(f"Error deleting QR code file: {e}")
-        db.delete(qr_code)
+    db.query(QRCode).filter(QRCode.userId == user_id).delete()
 
     db.delete(db_user)
     db.commit()
-    return {"message": "User and QR code deleted successfully"}
+    return {"message": "User and related data deleted successfully"}
+
 @app.delete("/appointments/{app_id}")
 def delete_appointment(app_id: int, db: Session = Depends(get_db)):
     appointment = db.query(ReceptionSchedule).filter(ReceptionSchedule.id == app_id).first()
@@ -2538,24 +2515,3 @@ def update_user(user_id: int, user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(db_user)
     return db_user
 
-
-@app.delete("/users/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.id == user_id).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Удаляем QR-код, если есть
-    qr_code = db.query(QRCode).filter(QRCode.userId == user_id).first()
-    if qr_code:
-        # Удаляем файл QR-кода с диска
-        if qr_code.path and os.path.exists(qr_code.path):
-            try:
-                os.remove(qr_code.path)
-            except Exception as e:
-                print(f"Error deleting QR code file: {e}")
-        db.delete(qr_code)
-
-    db.delete(db_user)
-    db.commit()
-    return {"message": "User and QR code deleted successfully"}
